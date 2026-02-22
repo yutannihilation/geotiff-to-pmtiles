@@ -1,0 +1,26 @@
+use clap::{Parser, Subcommand};
+
+#[derive(Debug, Parser)]
+#[command(name = "geotiff-to-pmtiles")]
+#[command(about = "Utilities for working with GeoTIFF and PMTiles")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    /// Print TIFF/GeoTIFF header information.
+    DumpHeader {
+        /// Path to a GeoTIFF file.
+        input: std::path::PathBuf,
+    },
+    /// Compute the minimum covering Web Mercator Z/X/Y tile for a GeoTIFF.
+    CoverTile {
+        /// Path to a GeoTIFF file.
+        input: std::path::PathBuf,
+        /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
+        #[arg(long)]
+        src_crs: Option<String>,
+    },
+}
