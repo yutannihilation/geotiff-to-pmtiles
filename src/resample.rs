@@ -8,6 +8,7 @@ use image::ImageEncoder;
 use image::ImageReader;
 use image::codecs::avif::AvifEncoder;
 use proj_lite::Proj;
+use rayon::prelude::*;
 use tiff::decoder::{ChunkType, Decoder, DecodingResult};
 use tiff::tags::Tag;
 
@@ -202,34 +203,36 @@ fn render_tile_debug(raster: &Raster, corners: [Pt; 4], resampling: Resampling) 
     const SIZE: usize = 512;
     let mut out = vec![0_u8; SIZE * SIZE * 4];
 
-    for j in 0..SIZE {
-        let v = if SIZE > 1 {
-            j as f64 / (SIZE as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let left = lerp(corners[0], corners[3], v);
-        let right = lerp(corners[1], corners[2], v);
-
-        for i in 0..SIZE {
-            let u = if SIZE > 1 {
-                i as f64 / (SIZE as f64 - 1.0)
+    out.par_chunks_mut(SIZE * 4)
+        .enumerate()
+        .for_each(|(j, row)| {
+            let v = if SIZE > 1 {
+                j as f64 / (SIZE as f64 - 1.0)
             } else {
                 0.0
             };
-            let p = lerp(left, right, u);
-            let rgba = match resampling {
-                Resampling::Nearest => sample_nearest(raster, p.x, p.y),
-                Resampling::Bilinear => sample_bilinear(raster, p.x, p.y),
-            };
+            let left = lerp(corners[0], corners[3], v);
+            let right = lerp(corners[1], corners[2], v);
 
-            let base = (j * SIZE + i) * 4;
-            out[base] = rgba[0];
-            out[base + 1] = rgba[1];
-            out[base + 2] = rgba[2];
-            out[base + 3] = rgba[3];
-        }
-    }
+            for i in 0..SIZE {
+                let u = if SIZE > 1 {
+                    i as f64 / (SIZE as f64 - 1.0)
+                } else {
+                    0.0
+                };
+                let p = lerp(left, right, u);
+                let rgba = match resampling {
+                    Resampling::Nearest => sample_nearest(raster, p.x, p.y),
+                    Resampling::Bilinear => sample_bilinear(raster, p.x, p.y),
+                };
+
+                let base = i * 4;
+                row[base] = rgba[0];
+                row[base + 1] = rgba[1];
+                row[base + 2] = rgba[2];
+                row[base + 3] = rgba[3];
+            }
+        });
 
     out
 }

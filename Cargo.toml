@@ -12,3 +12,4 @@ proj-lite = { git = "https://github.com/yutannihilation/proj-rs-lite.git", versi
 image = { version = "0.25.8", default-features = false, features = ["avif", "tiff"] }
 ravif = "0.13.0"
 imgref = { version = "1.12.0", default-features = false }
+rayon = "1.11.0"

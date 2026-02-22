@@ -508,6 +508,7 @@ dependencies = [
  "pmtiles",
  "proj-lite",
  "ravif 0.13.0",
+ "rayon",
  "tiff 0.9.1",
 ]
 
