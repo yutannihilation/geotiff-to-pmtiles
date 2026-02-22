@@ -6,26 +6,26 @@ Small Rust CLI to inspect GeoTIFF headers, estimate covering XYZ tiles, debug re
 
 Pre-built binaries can be found at [Releases](https://github.com/yutannihilation/geotiff-to-pmtiles/releases).
 
-## Build
+## Usages
+
+### Convert to PMTiles
 
 ```sh
-cargo build --release
+# defaults: min zoom auto, max zoom = min + 3
+geotiff-to-pmtiles convert "./data/*.tif" --src-crs EPSG:6677 --output out.pmtiles
 ```
 
-## Quick Start
+### Debug commands
 
 ```sh
 # Header dump
-cargo run -- dump-header ./data/sample.tif
+geotiff-to-pmtiles dump-header ./data/sample.tif
 
 # Find 1-4 covering tiles at an auto-selected zoom
-cargo run -- cover-tile ./data/sample.tif --src-crs EPSG:6677
+geotiff-to-pmtiles cover-tile ./data/sample.tif --src-crs EPSG:6677
 
 # Debug render covering tiles as out1.avif, out2.avif, ...
-cargo run -- resample-tiles "./data/*.tif" --src-crs EPSG:6677 --resampling bilinear
-
-# Convert to PMTiles (defaults: min zoom auto, max zoom = min + 3)
-cargo run --release -- convert "./data/*.tif" --src-crs EPSG:6677 --output out.pmtiles
+geotiff-to-pmtiles resample-tiles "./data/*.tif" --src-crs EPSG:6677 --resampling bilinear
 ```
 
 ## Notes
