@@ -240,16 +240,6 @@ pub fn resample_tiles(
     Ok(())
 }
 
-pub(crate) fn render_tile_debug(
-    raster: &Raster,
-    corners: [Pt; 4],
-    resampling: Resampling,
-    nodata: Option<NoDataSpec>,
-) -> Vec<u8> {
-    let sources = [((raster), corners)];
-    render_tile_debug_multi(&sources, resampling, nodata)
-}
-
 pub(crate) fn render_tile_debug_multi(
     sources: &[(&Raster, [Pt; 4])],
     resampling: Resampling,
@@ -317,12 +307,6 @@ pub(crate) fn render_tile_debug_multi(
     out
 }
 
-fn sample_nearest(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -> [u8; 4] {
-    sample_nearest_with_dist(raster, x, y, nodata)
-        .map(|(px, _)| px)
-        .unwrap_or([0, 0, 0, 0])
-}
-
 fn sample_nearest_with_dist(
     raster: &Raster,
     x: f64,
@@ -352,10 +336,6 @@ fn sample_nearest_with_dist(
     }
 
     None
-}
-
-fn sample_bilinear(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -> [u8; 4] {
-    sample_bilinear_opt(raster, x, y, nodata).unwrap_or([0, 0, 0, 0])
 }
 
 fn sample_bilinear_opt(
@@ -414,10 +394,6 @@ fn sample_bilinear_opt(
         out[c] = (acc[c] / wsum).round().clamp(0.0, 255.0) as u8;
     }
     Some(out)
-}
-
-fn sample_pixel(raster: &Raster, xi: isize, yi: isize) -> [u8; 4] {
-    sample_pixel_opt(raster, xi, yi).unwrap_or([0, 0, 0, 0])
 }
 
 fn sample_pixel_opt(raster: &Raster, xi: isize, yi: isize) -> Option<[u8; 4]> {
@@ -484,11 +460,9 @@ pub(crate) struct Georef {
     pub(crate) source_crs: String,
     pub(crate) forward: GeoTransform,
     pub(crate) raster_offset: f64,
-    pub(crate) used_tfw: bool,
 }
 
 pub(crate) struct SourceDataset {
-    pub(crate) path: PathBuf,
     pub(crate) raster: Raster,
     pub(crate) georef: Georef,
 }
@@ -524,11 +498,7 @@ pub(crate) fn load_sources(
     for path in paths {
         let raster = load_raster(path.as_path())?;
         let georef = read_georef(path.as_path(), src_crs)?;
-        out.push(SourceDataset {
-            path,
-            raster,
-            georef,
-        });
+        out.push(SourceDataset { raster, georef });
     }
     Ok(out)
 }
@@ -665,7 +635,6 @@ pub(crate) fn read_georef(
         source_crs,
         forward,
         raster_offset,
-        used_tfw,
     })
 }
 
@@ -948,25 +917,6 @@ fn geokey_short(data: &[u16], target_key: u16) -> Option<u16> {
         }
     }
     None
-}
-
-pub(crate) fn largest_edge_length(corners: &[Pt]) -> Result<f64, Box<dyn std::error::Error>> {
-    if corners.len() < 4 {
-        return Err("expected 4 corners".into());
-    }
-
-    let d0 = distance(corners[0], corners[1]);
-    let d1 = distance(corners[1], corners[2]);
-    let d2 = distance(corners[2], corners[3]);
-    let d3 = distance(corners[3], corners[0]);
-
-    Ok(d0.max(d1).max(d2).max(d3))
-}
-
-fn distance(a: Pt, b: Pt) -> f64 {
-    let dx = a.x - b.x;
-    let dy = a.y - b.y;
-    (dx * dx + dy * dy).sqrt()
 }
 
 pub(crate) fn zoom_for_tile_size(required_size: f64) -> u8 {
