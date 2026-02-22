@@ -30,6 +30,9 @@ pub enum Commands {
         /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
         #[arg(long)]
         src_crs: Option<String>,
+        /// NoData value, e.g. "0" or "255,255,255".
+        #[arg(long, alias = "nodata")]
+        nodeta: Option<String>,
         /// Resampling method.
         #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
         resampling: Resampling,
@@ -44,6 +47,9 @@ pub enum Commands {
         /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
         #[arg(long)]
         src_crs: Option<String>,
+        /// NoData value, e.g. "0" or "255,255,255".
+        #[arg(long, alias = "nodata")]
+        nodeta: Option<String>,
         /// Minimum zoom level. If omitted, it is auto-determined.
         #[arg(long)]
         min_zoom: Option<u8>,

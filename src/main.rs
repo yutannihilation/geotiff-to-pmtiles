@@ -20,12 +20,14 @@ fn main() -> ExitCode {
         Commands::ResampleTiles {
             input,
             src_crs,
+            nodeta,
             resampling,
-        } => resample::resample_tiles(&input, src_crs.as_deref(), resampling),
+        } => resample::resample_tiles(&input, src_crs.as_deref(), nodeta.as_deref(), resampling),
         Commands::Convert {
             input,
             output,
             src_crs,
+            nodeta,
             min_zoom,
             max_zoom,
             resampling,
@@ -33,6 +35,7 @@ fn main() -> ExitCode {
             &input,
             &output,
             src_crs.as_deref(),
+            nodeta.as_deref(),
             min_zoom,
             max_zoom,
             resampling,

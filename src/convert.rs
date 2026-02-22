@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Pt, encode_avif, largest_edge_length, load_raster, read_georef, render_tile_debug,
+    Pt, encode_avif, largest_edge_length, load_raster, parse_nodeta, read_georef, render_tile_debug,
     tile_bounds_webmerc, webmerc_to_tile, zoom_for_tile_size,
 };
 
@@ -15,10 +15,12 @@ pub fn convert(
     input: &std::path::Path,
     output: &std::path::Path,
     src_crs: Option<&str>,
+    nodeta: Option<&str>,
     min_zoom_opt: Option<u8>,
     max_zoom_opt: Option<u8>,
     resampling: Resampling,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let nodata = parse_nodeta(nodeta)?;
     let raster = load_raster(input)?;
     let georef = read_georef(input, src_crs)?;
 
@@ -139,7 +141,7 @@ pub fn convert(
         let mut encoded_tiles = work_items
             .into_par_iter()
             .map(|(z, x, y, corners)| -> Result<(u64, TileCoord, Vec<u8>), String> {
-                let rgba = render_tile_debug(&raster, corners, resampling);
+                let rgba = render_tile_debug(&raster, corners, resampling, nodata);
                 let avif = encode_avif(&rgba).map_err(|e| e.to_string())?;
                 let coord = TileCoord::new(z, x, y).map_err(|e| e.to_string())?;
                 let tile_id = TileId::from(coord).value();

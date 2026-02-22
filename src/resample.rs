@@ -120,11 +120,67 @@ pub(crate) struct Raster {
     pub(crate) data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NoDataSpec {
+    Gray(u8),
+    Rgb(u8, u8, u8),
+}
+
+impl NoDataSpec {
+    pub(crate) fn is_nodata(self, rgba: [u8; 4]) -> bool {
+        match self {
+            NoDataSpec::Gray(v) => rgba[0] == v && rgba[1] == v && rgba[2] == v,
+            NoDataSpec::Rgb(r, g, b) => rgba[0] == r && rgba[1] == g && rgba[2] == b,
+        }
+    }
+}
+
+pub(crate) fn parse_nodeta(
+    value: Option<&str>,
+) -> Result<Option<NoDataSpec>, Box<dyn std::error::Error>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    let parts = value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    match parts.len() {
+        1 => {
+            let v: u8 = parts[0]
+                .parse()
+                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+            Ok(Some(NoDataSpec::Gray(v)))
+        }
+        3 => {
+            let r: u8 = parts[0]
+                .parse()
+                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+            let g: u8 = parts[1]
+                .parse()
+                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+            let b: u8 = parts[2]
+                .parse()
+                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+            Ok(Some(NoDataSpec::Rgb(r, g, b)))
+        }
+        _ => Err(format!("invalid --nodeta value: {value}. Use '0' or '255,255,255'.").into()),
+    }
+}
+
 pub fn resample_tiles(
     path: &std::path::Path,
     src_crs: Option<&str>,
+    nodeta: Option<&str>,
     resampling: Resampling,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let nodata = parse_nodeta(nodeta)?;
     let raster = load_raster(path)?;
     let georef = read_georef(path, src_crs)?;
 
@@ -189,7 +245,7 @@ pub fn resample_tiles(
             tile_raster_corners[i] = inverse.apply(Pt { x: sx, y: sy });
         }
 
-        let out = render_tile_debug(&raster, tile_raster_corners, resampling);
+        let out = render_tile_debug(&raster, tile_raster_corners, resampling, nodata);
         let filename = format!("out{}.avif", idx + 1);
         write_avif(&filename, &out)?;
 
@@ -203,6 +259,7 @@ pub(crate) fn render_tile_debug(
     raster: &Raster,
     corners: [Pt; 4],
     resampling: Resampling,
+    nodata: Option<NoDataSpec>,
 ) -> Vec<u8> {
     const SIZE: usize = 512;
     let mut out = vec![0_u8; SIZE * SIZE * 4];
@@ -226,8 +283,8 @@ pub(crate) fn render_tile_debug(
                 };
                 let p = lerp(left, right, u);
                 let rgba = match resampling {
-                    Resampling::Nearest => sample_nearest(raster, p.x, p.y),
-                    Resampling::Bilinear => sample_bilinear(raster, p.x, p.y),
+                    Resampling::Nearest => sample_nearest(raster, p.x, p.y, nodata),
+                    Resampling::Bilinear => sample_bilinear(raster, p.x, p.y, nodata),
                 };
 
                 let base = i * 4;
@@ -241,10 +298,71 @@ pub(crate) fn render_tile_debug(
     out
 }
 
-fn sample_nearest(raster: &Raster, x: f64, y: f64) -> [u8; 4] {
-    let xi = x.round() as isize;
-    let yi = y.round() as isize;
+fn sample_nearest(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -> [u8; 4] {
+    let x0 = x.floor() as isize;
+    let y0 = y.floor() as isize;
+    let mut candidates = [(x0, y0), (x0 + 1, y0), (x0, y0 + 1), (x0 + 1, y0 + 1)];
+    candidates.sort_by(|(ax, ay), (bx, by)| {
+        let da = (*ax as f64 - x).powi(2) + (*ay as f64 - y).powi(2);
+        let db = (*bx as f64 - x).powi(2) + (*by as f64 - y).powi(2);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
+    for (xi, yi) in candidates {
+        let px = sample_pixel(raster, xi, yi);
+        if let Some(nd) = nodata {
+            if nd.is_nodata(px) {
+                continue;
+            }
+        }
+        return px;
+    }
+
+    [0, 0, 0, 0]
+}
+
+fn sample_bilinear(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -> [u8; 4] {
+    let x0 = x.floor();
+    let y0 = y.floor();
+    let x1 = x0 + 1.0;
+    let y1 = y0 + 1.0;
+
+    let tx = x - x0;
+    let ty = y - y0;
+
+    let samples = [
+        (sample_pixel(raster, x0 as isize, y0 as isize), (1.0 - tx) * (1.0 - ty)),
+        (sample_pixel(raster, x1 as isize, y0 as isize), tx * (1.0 - ty)),
+        (sample_pixel(raster, x0 as isize, y1 as isize), (1.0 - tx) * ty),
+        (sample_pixel(raster, x1 as isize, y1 as isize), tx * ty),
+    ];
+
+    let mut acc = [0.0_f64; 4];
+    let mut wsum = 0.0_f64;
+    for (px, w) in samples {
+        if let Some(nd) = nodata {
+            if nd.is_nodata(px) {
+                continue;
+            }
+        }
+        wsum += w;
+        for c in 0..4 {
+            acc[c] += px[c] as f64 * w;
+        }
+    }
+
+    if wsum <= f64::EPSILON {
+        return [0, 0, 0, 0];
+    }
+
+    let mut out = [0_u8; 4];
+    for c in 0..4 {
+        out[c] = (acc[c] / wsum).round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+fn sample_pixel(raster: &Raster, xi: isize, yi: isize) -> [u8; 4] {
     if xi < 0 || yi < 0 || xi >= raster.width as isize || yi >= raster.height as isize {
         return [0, 0, 0, 0];
     }
@@ -280,35 +398,6 @@ fn sample_nearest(raster: &Raster, x: f64, y: f64) -> [u8; 4] {
             [r, g, b, a]
         }
     }
-}
-
-fn sample_bilinear(raster: &Raster, x: f64, y: f64) -> [u8; 4] {
-    let x0 = x.floor();
-    let y0 = y.floor();
-    let x1 = x0 + 1.0;
-    let y1 = y0 + 1.0;
-
-    let tx = x - x0;
-    let ty = y - y0;
-
-    let p00 = sample_nearest(raster, x0, y0);
-    let p10 = sample_nearest(raster, x1, y0);
-    let p01 = sample_nearest(raster, x0, y1);
-    let p11 = sample_nearest(raster, x1, y1);
-
-    let mut out = [0_u8; 4];
-    for c in 0..4 {
-        let v00 = p00[c] as f64;
-        let v10 = p10[c] as f64;
-        let v01 = p01[c] as f64;
-        let v11 = p11[c] as f64;
-
-        let top = v00 + (v10 - v00) * tx;
-        let bottom = v01 + (v11 - v01) * tx;
-        let v = top + (bottom - top) * ty;
-        out[c] = v.round().clamp(0.0, 255.0) as u8;
-    }
-    out
 }
 
 pub(crate) fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
