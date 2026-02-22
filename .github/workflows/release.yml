@@ -139,6 +139,25 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      - name: Add NASM/SQLite to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $extraPaths = @(
+            "C:\ProgramData\chocolatey\bin",
+            "C:\ProgramData\chocolatey\lib\SQLite\tools",
+            "C:\ProgramData\chocolatey\lib\nasm\tools",
+            "C:\ProgramData\chocolatey\lib\nasm\tools\bin"
+          )
+          foreach ($p in $extraPaths) {
+            if (Test-Path $p) {
+              $p | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            }
+          }
+          $nasm = Get-Command nasm -ErrorAction SilentlyContinue
+          $sqlite = Get-Command sqlite3 -ErrorAction SilentlyContinue
+          Write-Host ("nasm: " + ($nasm?.Source ?? "not found in current shell"))
+          Write-Host ("sqlite3: " + ($sqlite?.Source ?? "not found in current shell"))
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
