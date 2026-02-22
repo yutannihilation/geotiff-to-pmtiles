@@ -31,7 +31,7 @@ pub enum Commands {
         #[arg(long)]
         src_crs: Option<String>,
         /// Resampling method.
-        #[arg(long, value_enum, default_value_t = Resampling::Nearest)]
+        #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
         resampling: Resampling,
     },
     /// Convert GeoTIFF to PMTiles with AVIF image tiles.
@@ -51,7 +51,7 @@ pub enum Commands {
         #[arg(long)]
         max_zoom: Option<u8>,
         /// Resampling method.
-        #[arg(long, value_enum, default_value_t = Resampling::Nearest)]
+        #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
         resampling: Resampling,
     },
 }
