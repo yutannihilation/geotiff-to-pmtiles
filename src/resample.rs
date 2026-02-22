@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::BufReader;
+use std::path::PathBuf;
 
 use crate::cli::Resampling;
 use image::ExtendedColorType;
@@ -175,77 +176,61 @@ pub(crate) fn parse_nodeta(
 }
 
 pub fn resample_tiles(
-    path: &std::path::Path,
+    input: &str,
     src_crs: Option<&str>,
     nodeta: Option<&str>,
     resampling: Resampling,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let nodata = parse_nodeta(nodeta)?;
-    let raster = load_raster(path)?;
-    let georef = read_georef(path, src_crs)?;
+    let sources = load_sources(input, src_crs)?;
 
-    let corners_px = [
-        Pt {
-            x: georef.raster_offset,
-            y: georef.raster_offset,
-        },
-        Pt {
-            x: raster.width as f64 + georef.raster_offset,
-            y: georef.raster_offset,
-        },
-        Pt {
-            x: raster.width as f64 + georef.raster_offset,
-            y: raster.height as f64 + georef.raster_offset,
-        },
-        Pt {
-            x: georef.raster_offset,
-            y: raster.height as f64 + georef.raster_offset,
-        },
-    ];
-
-    let corners_src = corners_px.map(|p| georef.forward.apply(p));
-    let to_merc = Proj::new_known_crs(&georef.source_crs, "EPSG:3857")?;
-    let corners_merc = corners_src
-        .map(|p| to_merc.transform2((p.x, p.y)).map(|(x, y)| Pt { x, y }))
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let largest_edge = largest_edge_length(&corners_merc)?;
-    let z = zoom_for_tile_size(largest_edge);
-
-    let mut tiles = BTreeSet::new();
-    for corner in &corners_merc {
-        let (x, y) = webmerc_to_tile(corner.x, corner.y, z);
-        tiles.insert((x, y));
+    let mut corners_merc = Vec::new();
+    for source in &sources {
+        corners_merc.extend_from_slice(&source_corners_merc(source)?);
     }
 
-    let from_merc = Proj::new_known_crs("EPSG:3857", &georef.source_crs)?;
-    let inverse = georef.forward.invert()?;
+    let min_x_merc = corners_merc
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x_merc = corners_merc
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y_merc = corners_merc
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y_merc = corners_merc
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let largest_edge = (max_x_merc - min_x_merc).max(max_y_merc - min_y_merc);
+    let z = zoom_for_tile_size(largest_edge);
 
-    println!("File: {}", path.display());
-    println!("Source CRS: {}", georef.source_crs);
-    println!(
-        "Transform source: {}",
-        if georef.used_tfw {
-            "world file (.tfw)"
-        } else {
-            "GeoTIFF tags"
+    let (x_min, y_min) = webmerc_to_tile(min_x_merc, max_y_merc, z);
+    let (x_max, y_max) = webmerc_to_tile(max_x_merc, min_y_merc, z);
+    let mut tiles = BTreeSet::new();
+    for y in y_min..=y_max {
+        for x in x_min..=x_max {
+            tiles.insert((x, y));
         }
-    );
+    }
+
+    println!("Input pattern: {input}");
+    println!("Input files: {}", sources.len());
     println!("Selected zoom: {z}");
     println!("Output tiles: {}", tiles.len());
 
     for (idx, (x, y)) in tiles.iter().enumerate() {
         let bounds = tile_bounds_webmerc(z, *x, *y);
-
         let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
-        let mut tile_raster_corners = [Pt { x: 0.0, y: 0.0 }; 4];
-        for (i, p) in tile_merc_corners.iter().enumerate() {
-            let (sx, sy) = from_merc.transform2((p.x, p.y))?;
-            tile_raster_corners[i] = inverse.apply(Pt { x: sx, y: sy });
+        let mut per_source = Vec::with_capacity(sources.len());
+        for source in &sources {
+            let corners = tile_corners_in_source_raster(source, tile_merc_corners)?;
+            per_source.push((&source.raster, corners));
         }
-
-        let out = render_tile_debug(&raster, tile_raster_corners, resampling, nodata);
+        let out = render_tile_debug_multi(&per_source, resampling, nodata);
         let filename = format!("out{}.avif", idx + 1);
         write_avif(&filename, &out)?;
 
@@ -261,6 +246,15 @@ pub(crate) fn render_tile_debug(
     resampling: Resampling,
     nodata: Option<NoDataSpec>,
 ) -> Vec<u8> {
+    let sources = [((raster), corners)];
+    render_tile_debug_multi(&sources, resampling, nodata)
+}
+
+pub(crate) fn render_tile_debug_multi(
+    sources: &[(&Raster, [Pt; 4])],
+    resampling: Resampling,
+    nodata: Option<NoDataSpec>,
+) -> Vec<u8> {
     const SIZE: usize = 512;
     let mut out = vec![0_u8; SIZE * SIZE * 4];
 
@@ -272,8 +266,6 @@ pub(crate) fn render_tile_debug(
             } else {
                 0.0
             };
-            let left = lerp(corners[0], corners[3], v);
-            let right = lerp(corners[1], corners[2], v);
 
             for i in 0..SIZE {
                 let u = if SIZE > 1 {
@@ -281,10 +273,37 @@ pub(crate) fn render_tile_debug(
                 } else {
                     0.0
                 };
-                let p = lerp(left, right, u);
                 let rgba = match resampling {
-                    Resampling::Nearest => sample_nearest(raster, p.x, p.y, nodata),
-                    Resampling::Bilinear => sample_bilinear(raster, p.x, p.y, nodata),
+                    Resampling::Nearest => {
+                        let mut best: Option<([u8; 4], f64)> = None;
+                        for (raster, corners) in sources {
+                            let left = lerp(corners[0], corners[3], v);
+                            let right = lerp(corners[1], corners[2], v);
+                            let p = lerp(left, right, u);
+                            if let Some((px, dist2)) =
+                                sample_nearest_with_dist(raster, p.x, p.y, nodata)
+                            {
+                                match best {
+                                    Some((_, d)) if d <= dist2 => {}
+                                    _ => best = Some((px, dist2)),
+                                }
+                            }
+                        }
+                        best.map(|(px, _)| px).unwrap_or([0, 0, 0, 0])
+                    }
+                    Resampling::Bilinear => {
+                        let mut chosen = None;
+                        for (raster, corners) in sources {
+                            let left = lerp(corners[0], corners[3], v);
+                            let right = lerp(corners[1], corners[2], v);
+                            let p = lerp(left, right, u);
+                            if let Some(px) = sample_bilinear_opt(raster, p.x, p.y, nodata) {
+                                chosen = Some(px);
+                                break;
+                            }
+                        }
+                        chosen.unwrap_or([0, 0, 0, 0])
+                    }
                 };
 
                 let base = i * 4;
@@ -299,6 +318,17 @@ pub(crate) fn render_tile_debug(
 }
 
 fn sample_nearest(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -> [u8; 4] {
+    sample_nearest_with_dist(raster, x, y, nodata)
+        .map(|(px, _)| px)
+        .unwrap_or([0, 0, 0, 0])
+}
+
+fn sample_nearest_with_dist(
+    raster: &Raster,
+    x: f64,
+    y: f64,
+    nodata: Option<NoDataSpec>,
+) -> Option<([u8; 4], f64)> {
     let x0 = x.floor() as isize;
     let y0 = y.floor() as isize;
     let mut candidates = [(x0, y0), (x0 + 1, y0), (x0, y0 + 1), (x0 + 1, y0 + 1)];
@@ -309,19 +339,31 @@ fn sample_nearest(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -
     });
 
     for (xi, yi) in candidates {
-        let px = sample_pixel(raster, xi, yi);
+        let Some(px) = sample_pixel_opt(raster, xi, yi) else {
+            continue;
+        };
         if let Some(nd) = nodata {
             if nd.is_nodata(px) {
                 continue;
             }
         }
-        return px;
+        let dist2 = (xi as f64 - x).powi(2) + (yi as f64 - y).powi(2);
+        return Some((px, dist2));
     }
 
-    [0, 0, 0, 0]
+    None
 }
 
 fn sample_bilinear(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) -> [u8; 4] {
+    sample_bilinear_opt(raster, x, y, nodata).unwrap_or([0, 0, 0, 0])
+}
+
+fn sample_bilinear_opt(
+    raster: &Raster,
+    x: f64,
+    y: f64,
+    nodata: Option<NoDataSpec>,
+) -> Option<[u8; 4]> {
     let x0 = x.floor();
     let y0 = y.floor();
     let x1 = x0 + 1.0;
@@ -331,15 +373,27 @@ fn sample_bilinear(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) 
     let ty = y - y0;
 
     let samples = [
-        (sample_pixel(raster, x0 as isize, y0 as isize), (1.0 - tx) * (1.0 - ty)),
-        (sample_pixel(raster, x1 as isize, y0 as isize), tx * (1.0 - ty)),
-        (sample_pixel(raster, x0 as isize, y1 as isize), (1.0 - tx) * ty),
-        (sample_pixel(raster, x1 as isize, y1 as isize), tx * ty),
+        (
+            sample_pixel_opt(raster, x0 as isize, y0 as isize),
+            (1.0 - tx) * (1.0 - ty),
+        ),
+        (
+            sample_pixel_opt(raster, x1 as isize, y0 as isize),
+            tx * (1.0 - ty),
+        ),
+        (
+            sample_pixel_opt(raster, x0 as isize, y1 as isize),
+            (1.0 - tx) * ty,
+        ),
+        (sample_pixel_opt(raster, x1 as isize, y1 as isize), tx * ty),
     ];
 
     let mut acc = [0.0_f64; 4];
     let mut wsum = 0.0_f64;
     for (px, w) in samples {
+        let Some(px) = px else {
+            continue;
+        };
         if let Some(nd) = nodata {
             if nd.is_nodata(px) {
                 continue;
@@ -352,19 +406,23 @@ fn sample_bilinear(raster: &Raster, x: f64, y: f64, nodata: Option<NoDataSpec>) 
     }
 
     if wsum <= f64::EPSILON {
-        return [0, 0, 0, 0];
+        return None;
     }
 
     let mut out = [0_u8; 4];
     for c in 0..4 {
         out[c] = (acc[c] / wsum).round().clamp(0.0, 255.0) as u8;
     }
-    out
+    Some(out)
 }
 
 fn sample_pixel(raster: &Raster, xi: isize, yi: isize) -> [u8; 4] {
+    sample_pixel_opt(raster, xi, yi).unwrap_or([0, 0, 0, 0])
+}
+
+fn sample_pixel_opt(raster: &Raster, xi: isize, yi: isize) -> Option<[u8; 4]> {
     if xi < 0 || yi < 0 || xi >= raster.width as isize || yi >= raster.height as isize {
-        return [0, 0, 0, 0];
+        return None;
     }
 
     let xi = xi as usize;
@@ -372,10 +430,10 @@ fn sample_pixel(raster: &Raster, xi: isize, yi: isize) -> [u8; 4] {
     let pixel_index = yi * raster.width + xi;
     let base = pixel_index.saturating_mul(raster.stride);
     if base >= raster.data.len() {
-        return [0, 0, 0, 0];
+        return None;
     }
 
-    match raster.stride {
+    let out = match raster.stride {
         0 => [0, 0, 0, 0],
         1 => {
             let g = raster.data[base];
@@ -397,7 +455,8 @@ fn sample_pixel(raster: &Raster, xi: isize, yi: isize) -> [u8; 4] {
             };
             [r, g, b, a]
         }
-    }
+    };
+    Some(out)
 }
 
 pub(crate) fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
@@ -426,6 +485,97 @@ pub(crate) struct Georef {
     pub(crate) forward: GeoTransform,
     pub(crate) raster_offset: f64,
     pub(crate) used_tfw: bool,
+}
+
+pub(crate) struct SourceDataset {
+    pub(crate) path: PathBuf,
+    pub(crate) raster: Raster,
+    pub(crate) georef: Georef,
+}
+
+pub(crate) fn resolve_input_paths(input: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut paths = Vec::new();
+    for entry in glob::glob(input)? {
+        match entry {
+            Ok(path) if path.is_file() => paths.push(path),
+            Ok(_) => {}
+            Err(err) => return Err(err.to_string().into()),
+        }
+    }
+    if paths.is_empty() {
+        let p = PathBuf::from(input);
+        if p.is_file() {
+            paths.push(p);
+        }
+    }
+    if paths.is_empty() {
+        return Err(format!("no input files matched: {input}").into());
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+pub(crate) fn load_sources(
+    input: &str,
+    src_crs: Option<&str>,
+) -> Result<Vec<SourceDataset>, Box<dyn std::error::Error>> {
+    let paths = resolve_input_paths(input)?;
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let raster = load_raster(path.as_path())?;
+        let georef = read_georef(path.as_path(), src_crs)?;
+        out.push(SourceDataset {
+            path,
+            raster,
+            georef,
+        });
+    }
+    Ok(out)
+}
+
+pub(crate) fn source_corners_merc(
+    source: &SourceDataset,
+) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    let corners_px = [
+        Pt {
+            x: source.georef.raster_offset,
+            y: source.georef.raster_offset,
+        },
+        Pt {
+            x: source.raster.width as f64 + source.georef.raster_offset,
+            y: source.georef.raster_offset,
+        },
+        Pt {
+            x: source.raster.width as f64 + source.georef.raster_offset,
+            y: source.raster.height as f64 + source.georef.raster_offset,
+        },
+        Pt {
+            x: source.georef.raster_offset,
+            y: source.raster.height as f64 + source.georef.raster_offset,
+        },
+    ];
+    let corners_src = corners_px.map(|p| source.georef.forward.apply(p));
+    let to_merc = Proj::new_known_crs(&source.georef.source_crs, "EPSG:3857")?;
+    let mut out = [Pt { x: 0.0, y: 0.0 }; 4];
+    for (i, p) in corners_src.iter().enumerate() {
+        let (x, y) = to_merc.transform2((p.x, p.y))?;
+        out[i] = Pt { x, y };
+    }
+    Ok(out)
+}
+
+pub(crate) fn tile_corners_in_source_raster(
+    source: &SourceDataset,
+    tile_corners_merc: [Pt; 4],
+) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    let from_merc = Proj::new_known_crs("EPSG:3857", &source.georef.source_crs)?;
+    let inverse = source.georef.forward.invert()?;
+    let mut out = [Pt { x: 0.0, y: 0.0 }; 4];
+    for (i, p) in tile_corners_merc.iter().enumerate() {
+        let (sx, sy) = from_merc.transform2((p.x, p.y))?;
+        out[i] = inverse.apply(Pt { x: sx, y: sy });
+    }
+    Ok(out)
 }
 
 pub(crate) fn read_georef(

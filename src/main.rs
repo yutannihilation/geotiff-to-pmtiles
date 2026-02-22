@@ -22,7 +22,12 @@ fn main() -> ExitCode {
             src_crs,
             nodeta,
             resampling,
-        } => resample::resample_tiles(&input, src_crs.as_deref(), nodeta.as_deref(), resampling),
+        } => resample::resample_tiles(
+            input.as_str(),
+            src_crs.as_deref(),
+            nodeta.as_deref(),
+            resampling,
+        ),
         Commands::Convert {
             input,
             output,
@@ -32,7 +37,7 @@ fn main() -> ExitCode {
             max_zoom,
             resampling,
         } => convert::convert(
-            &input,
+            input.as_str(),
             &output,
             src_crs.as_deref(),
             nodeta.as_deref(),

@@ -7,12 +7,12 @@ use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Pt, encode_avif, largest_edge_length, load_raster, parse_nodeta, read_georef, render_tile_debug,
-    tile_bounds_webmerc, webmerc_to_tile, zoom_for_tile_size,
+    encode_avif, load_sources, parse_nodeta, render_tile_debug_multi, source_corners_merc,
+    tile_bounds_webmerc, tile_corners_in_source_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
 pub fn convert(
-    input: &std::path::Path,
+    input: &str,
     output: &std::path::Path,
     src_crs: Option<&str>,
     nodeta: Option<&str>,
@@ -21,36 +21,31 @@ pub fn convert(
     resampling: Resampling,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let nodata = parse_nodeta(nodeta)?;
-    let raster = load_raster(input)?;
-    let georef = read_georef(input, src_crs)?;
+    let sources = load_sources(input, src_crs)?;
 
-    let corners_px = [
-        Pt {
-            x: georef.raster_offset,
-            y: georef.raster_offset,
-        },
-        Pt {
-            x: raster.width as f64 + georef.raster_offset,
-            y: georef.raster_offset,
-        },
-        Pt {
-            x: raster.width as f64 + georef.raster_offset,
-            y: raster.height as f64 + georef.raster_offset,
-        },
-        Pt {
-            x: georef.raster_offset,
-            y: raster.height as f64 + georef.raster_offset,
-        },
-    ];
-    let corners_src = corners_px.map(|p| georef.forward.apply(p));
+    let mut corners_merc = Vec::new();
+    for source in &sources {
+        corners_merc.extend_from_slice(&source_corners_merc(source)?);
+    }
 
-    let to_merc = Proj::new_known_crs(&georef.source_crs, "EPSG:3857")?;
-    let corners_merc = corners_src
-        .map(|p| to_merc.transform2((p.x, p.y)).map(|(x, y)| Pt { x, y }))
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+    let min_x_merc = corners_merc
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x_merc = corners_merc
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y_merc = corners_merc
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y_merc = corners_merc
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::NEG_INFINITY, f64::max);
 
-    let auto_min_zoom = zoom_for_tile_size(largest_edge_length(&corners_merc)?);
+    let auto_min_zoom = zoom_for_tile_size((max_x_merc - min_x_merc).max(max_y_merc - min_y_merc));
     let min_zoom = min_zoom_opt.unwrap_or(auto_min_zoom);
     if min_zoom > 31 {
         return Err(format!("min_zoom must be <= 31, got {min_zoom}").into());
@@ -89,30 +84,10 @@ pub fn convert(
         .center(center_lon, center_lat)
         .create(file)?;
 
-    let from_merc = Proj::new_known_crs("EPSG:3857", &georef.source_crs)?;
-    let inverse = georef.forward.invert()?;
-
-    println!("Input: {}", input.display());
+    println!("Input pattern: {input}");
+    println!("Input files: {}", sources.len());
     println!("Output: {}", output.display());
-    println!("Source CRS: {}", georef.source_crs);
     println!("Zoom range: {min_zoom}..{max_zoom}");
-
-    let min_x_merc = corners_merc
-        .iter()
-        .map(|p| p.x)
-        .fold(f64::INFINITY, f64::min);
-    let max_x_merc = corners_merc
-        .iter()
-        .map(|p| p.x)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let min_y_merc = corners_merc
-        .iter()
-        .map(|p| p.y)
-        .fold(f64::INFINITY, f64::min);
-    let max_y_merc = corners_merc
-        .iter()
-        .map(|p| p.y)
-        .fold(f64::NEG_INFINITY, f64::max);
 
     for z in min_zoom..=max_zoom {
         let (x_min, y_min) = webmerc_to_tile(min_x_merc, max_y_merc, z);
@@ -125,23 +100,20 @@ pub fn convert(
             }
         }
 
-        let mut work_items = Vec::with_capacity(tiles.len());
-        for (x, y) in tiles {
-            let bounds = tile_bounds_webmerc(z, x, y);
-            let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
-
-            let mut tile_raster_corners = [Pt { x: 0.0, y: 0.0 }; 4];
-            for (i, p) in tile_merc_corners.iter().enumerate() {
-                let (sx, sy) = from_merc.transform2((p.x, p.y))?;
-                tile_raster_corners[i] = inverse.apply(Pt { x: sx, y: sy });
-            }
-            work_items.push((z, x, y, tile_raster_corners));
-        }
-
-        let mut encoded_tiles = work_items
+        let mut encoded_tiles = tiles
             .into_par_iter()
-            .map(|(z, x, y, corners)| -> Result<(u64, TileCoord, Vec<u8>), String> {
-                let rgba = render_tile_debug(&raster, corners, resampling, nodata);
+            .map(|(x, y)| -> Result<(u64, TileCoord, Vec<u8>), String> {
+                let bounds = tile_bounds_webmerc(z, x, y);
+                let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
+
+                let mut per_source = Vec::with_capacity(sources.len());
+                for source in &sources {
+                    let corners = tile_corners_in_source_raster(source, tile_merc_corners)
+                        .map_err(|e| e.to_string())?;
+                    per_source.push((&source.raster, corners));
+                }
+
+                let rgba = render_tile_debug_multi(&per_source, resampling, nodata);
                 let avif = encode_avif(&rgba).map_err(|e| e.to_string())?;
                 let coord = TileCoord::new(z, x, y).map_err(|e| e.to_string())?;
                 let tile_id = TileId::from(coord).value();
