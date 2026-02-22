@@ -139,27 +139,14 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
-      - name: Add NASM/SQLite to PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $extraPaths = @(
-            "C:\ProgramData\chocolatey\bin",
-            "C:\ProgramData\chocolatey\lib\SQLite\tools",
-            "C:\ProgramData\chocolatey\lib\nasm\tools",
-            "C:\ProgramData\chocolatey\lib\nasm\tools\bin"
-          )
-          foreach ($p in $extraPaths) {
-            if (Test-Path $p) {
-              $p | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            }
-          }
-          $nasm = Get-Command nasm -ErrorAction SilentlyContinue
-          $sqlite = Get-Command sqlite3 -ErrorAction SilentlyContinue
-          Write-Host ("nasm: " + ($nasm?.Source ?? "not found in current shell"))
-          Write-Host ("sqlite3: " + ($sqlite?.Source ?? "not found in current shell"))
       - name: Build artifacts
+        shell: bash
         run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export PATH="/c/ProgramData/chocolatey/bin:/c/ProgramData/chocolatey/lib/SQLite/tools:/c/ProgramData/chocolatey/lib/nasm/tools:/c/ProgramData/chocolatey/lib/nasm/tools/bin:$PATH"
+            echo "nasm: $(command -v nasm || echo not found)"
+            echo "sqlite3: $(command -v sqlite3 || echo not found)"
+          fi
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
