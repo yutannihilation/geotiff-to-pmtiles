@@ -843,7 +843,7 @@ dependencies = [
 [[package]]
 name = "proj-lite"
 version = "0.1.0"
-source = "git+https://github.com/yutannihilation/proj-rs-lite.git#0b94447ec16812c007ceea8b93853271e3580a36"
+source = "git+https://github.com/yutannihilation/proj-rs-lite.git#13e01a611f0f909b9fee1d6739270268ee8f10ec"
 dependencies = [
  "geo-traits",
  "proj-lite-sys",
@@ -853,7 +853,7 @@ dependencies = [
 [[package]]
 name = "proj-lite-sys"
 version = "0.1.0"
-source = "git+https://github.com/yutannihilation/proj-rs-lite.git#0b94447ec16812c007ceea8b93853271e3580a36"
+source = "git+https://github.com/yutannihilation/proj-rs-lite.git#13e01a611f0f909b9fee1d6739270268ee8f10ec"
 dependencies = [
  "cmake",
  "flate2",
