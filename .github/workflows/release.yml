@@ -143,7 +143,7 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            export PATH="/c/ProgramData/chocolatey/bin:/c/ProgramData/chocolatey/lib/SQLite/tools:/c/ProgramData/chocolatey/lib/nasm/tools:/c/ProgramData/chocolatey/lib/nasm/tools/bin:$PATH"
+            export PATH="/c/Program Files/NASM:/c/ProgramData/chocolatey/bin:/c/ProgramData/chocolatey/lib/SQLite/tools:/c/ProgramData/chocolatey/lib/nasm/tools:/c/ProgramData/chocolatey/lib/nasm/tools/bin:$PATH"
             echo "nasm: $(command -v nasm || echo not found)"
             echo "sqlite3: $(command -v sqlite3 || echo not found)"
           fi
