@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
 geotiff = "0.1.0"
-tiff = "0.9"
+tiff = "0.11"
 pmtiles = { version = "0.20.0", default-features = false, features = ["write"] }
 proj-lite = { git = "https://github.com/yutannihilation/proj-rs-lite.git", version = "0.1.0" }
 image = { version = "0.25.9", default-features = false, features = ["avif", "tiff"] }

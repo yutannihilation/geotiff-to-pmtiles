@@ -793,6 +793,11 @@ fn decoding_result_to_u8(image: DecodingResult) -> Vec<u8> {
             f32::MIN as f64,
             f32::MAX as f64,
         ),
+        DecodingResult::F16(v) => normalize_to_u8(
+            v.iter().map(|x| x.to_f32() as f64).collect::<Vec<_>>(),
+            f32::MIN as f64,
+            f32::MAX as f64,
+        ),
         DecodingResult::F64(v) => normalize_to_u8(v, f64::MIN, f64::MAX),
     }
 }
