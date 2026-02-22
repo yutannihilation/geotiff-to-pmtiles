@@ -1,60 +1,12 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use geotiff::GeoTiff;
 use tiff::decoder::Decoder;
 use tiff::tags::{CompressionMethod, PhotometricInterpretation, SampleFormat, Tag};
 
 pub fn dump_header(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("File: {}", path.display());
-
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-
-    match GeoTiff::read(reader) {
-        Ok(geotiff) => {
-            let extent = geotiff.model_extent();
-            let keys = &geotiff.geo_key_directory;
-
-            println!("Raster width: {}", geotiff.raster_width);
-            println!("Raster height: {}", geotiff.raster_height);
-            println!("Samples per pixel: {}", geotiff.num_samples);
-            println!(
-                "Model extent: min=({}, {}), max=({}, {})",
-                extent.min().x,
-                extent.min().y,
-                extent.max().x,
-                extent.max().y
-            );
-            println!("GeoKeyDirectory version: {}", keys.key_directory_version);
-            println!(
-                "GeoKey revision: {}.{}",
-                keys.key_revision, keys.minor_revision
-            );
-            println!("Model type: {}", format_opt(keys.model_type));
-            println!("Raster type: {}", format_opt_debug(keys.raster_type));
-            println!(
-                "Geographic type (EPSG): {}",
-                format_opt(keys.geographic_type)
-            );
-            println!("Projected type (EPSG): {}", format_opt(keys.projected_type));
-            println!(
-                "Geographic citation: {}",
-                format_opt(keys.geog_citation.as_deref())
-            );
-            println!(
-                "Projection citation: {}",
-                format_opt(keys.proj_citation.as_deref())
-            );
-        }
-        Err(err) => {
-            println!("GeoTIFF full decode: unsupported ({err})");
-            println!("Falling back to tag-only header dump.");
-            dump_header_tags(path)?;
-        }
-    }
-
-    Ok(())
+    dump_header_tags(path)
 }
 
 fn dump_header_tags(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
