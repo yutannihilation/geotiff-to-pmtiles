@@ -26,8 +26,17 @@ fn main() -> ExitCode {
             input,
             output,
             src_crs,
+            min_zoom,
+            max_zoom,
             resampling,
-        } => convert::convert(&input, &output, src_crs.as_deref(), resampling),
+        } => convert::convert(
+            &input,
+            &output,
+            src_crs.as_deref(),
+            min_zoom,
+            max_zoom,
+            resampling,
+        ),
     };
 
     match result {

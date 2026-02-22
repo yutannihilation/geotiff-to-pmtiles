@@ -14,6 +14,8 @@ pub fn convert(
     input: &std::path::Path,
     output: &std::path::Path,
     src_crs: Option<&str>,
+    min_zoom_opt: Option<u8>,
+    max_zoom_opt: Option<u8>,
     resampling: Resampling,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let raster = load_raster(input)?;
@@ -45,8 +47,18 @@ pub fn convert(
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
 
-    let min_zoom = zoom_for_tile_size(largest_edge_length(&corners_merc)?);
-    let max_zoom = (min_zoom.saturating_add(2)).min(31);
+    let auto_min_zoom = zoom_for_tile_size(largest_edge_length(&corners_merc)?);
+    let min_zoom = min_zoom_opt.unwrap_or(auto_min_zoom);
+    if min_zoom > 31 {
+        return Err(format!("min_zoom must be <= 31, got {min_zoom}").into());
+    }
+    let max_zoom = max_zoom_opt.unwrap_or(min_zoom.saturating_add(3).min(31));
+    if max_zoom > 31 {
+        return Err(format!("max_zoom must be <= 31, got {max_zoom}").into());
+    }
+    if max_zoom < min_zoom {
+        return Err(format!("max_zoom ({max_zoom}) must be >= min_zoom ({min_zoom})").into());
+    }
 
     let to_wgs84 = Proj::new_known_crs("EPSG:3857", "EPSG:4326")?;
     let mut min_lon = f64::INFINITY;

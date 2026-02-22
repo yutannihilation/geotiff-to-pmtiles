@@ -44,6 +44,12 @@ pub enum Commands {
         /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
         #[arg(long)]
         src_crs: Option<String>,
+        /// Minimum zoom level. If omitted, it is auto-determined.
+        #[arg(long)]
+        min_zoom: Option<u8>,
+        /// Maximum zoom level. If omitted, defaults to min_zoom + 3.
+        #[arg(long)]
+        max_zoom: Option<u8>,
         /// Resampling method.
         #[arg(long, value_enum, default_value_t = Resampling::Nearest)]
         resampling: Resampling,
