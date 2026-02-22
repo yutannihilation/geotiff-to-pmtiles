@@ -45,6 +45,8 @@ pub fn convert(
         .map(|p| p.y)
         .fold(f64::NEG_INFINITY, f64::max);
 
+    // Default zoom heuristic: choose the coarsest zoom whose tile edge can still cover
+    // the largest side of the union extent. Higher zooms are added as a small pyramid.
     let auto_min_zoom = zoom_for_tile_size((max_x_merc - min_x_merc).max(max_y_merc - min_y_merc));
     let min_zoom = min_zoom_opt.unwrap_or(auto_min_zoom);
     if min_zoom > 31 {
@@ -90,6 +92,7 @@ pub fn convert(
     println!("Zoom range: {min_zoom}..{max_zoom}");
 
     for z in min_zoom..=max_zoom {
+        // Cover the full extent by taking the inclusive tile range from bbox corners.
         let (x_min, y_min) = webmerc_to_tile(min_x_merc, max_y_merc, z);
         let (x_max, y_max) = webmerc_to_tile(max_x_merc, min_y_merc, z);
 
@@ -113,6 +116,7 @@ pub fn convert(
                     per_source.push((&source.raster, corners));
                 }
 
+                // Per-tile rendering is parallelized; writer insertion is kept ordered below.
                 let rgba = render_tile_debug_multi(&per_source, resampling, nodata);
                 let avif = encode_avif(&rgba).map_err(|e| e.to_string())?;
                 let coord = TileCoord::new(z, x, y).map_err(|e| e.to_string())?;
@@ -122,6 +126,7 @@ pub fn convert(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+        // PMTiles writer expects deterministic tile order.
         encoded_tiles.sort_by_key(|(tile_id, _, _)| *tile_id);
         for (_, coord, avif) in encoded_tiles {
             writer.add_raw_tile(coord, &avif)?;

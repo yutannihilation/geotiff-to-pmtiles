@@ -205,6 +205,8 @@ pub fn resample_tiles(
         .iter()
         .map(|p| p.y)
         .fold(f64::NEG_INFINITY, f64::max);
+    // Pick one "base" zoom where a tile edge is at least the largest dataset edge.
+    // This intentionally yields 1-4 tiles that cover the union extent.
     let largest_edge = (max_x_merc - min_x_merc).max(max_y_merc - min_y_merc);
     let z = zoom_for_tile_size(largest_edge);
 
@@ -265,6 +267,10 @@ pub(crate) fn render_tile_debug_multi(
                 };
                 let rgba = match resampling {
                     Resampling::Nearest => {
+                        // Nearest across many sources:
+                        // 1. Project output pixel to each source raster via bilinear corner interpolation.
+                        // 2. Sample nearest pixel in that source.
+                        // 3. Keep globally nearest candidate by pixel-space distance.
                         let mut best: Option<([u8; 4], f64)> = None;
                         for (raster, corners) in sources {
                             let left = lerp(corners[0], corners[3], v);
@@ -282,6 +288,8 @@ pub(crate) fn render_tile_debug_multi(
                         best.map(|(px, _)| px).unwrap_or([0, 0, 0, 0])
                     }
                     Resampling::Bilinear => {
+                        // Bilinear across many sources (simple policy):
+                        // use the first source in input order that can produce a valid sample.
                         let mut chosen = None;
                         for (raster, corners) in sources {
                             let left = lerp(corners[0], corners[3], v);
@@ -315,6 +323,8 @@ fn sample_nearest_with_dist(
 ) -> Option<([u8; 4], f64)> {
     let x0 = x.floor() as isize;
     let y0 = y.floor() as isize;
+    // Candidate set from the containing 2x2 cell. We sort by Euclidean distance and
+    // return the first in-bounds, non-nodata sample.
     let mut candidates = [(x0, y0), (x0 + 1, y0), (x0, y0 + 1), (x0 + 1, y0 + 1)];
     candidates.sort_by(|(ax, ay), (bx, by)| {
         let da = (*ax as f64 - x).powi(2) + (*ay as f64 - y).powi(2);
@@ -352,6 +362,7 @@ fn sample_bilinear_opt(
     let tx = x - x0;
     let ty = y - y0;
 
+    // Standard 2x2 bilinear weights at (x, y), but invalid/nodata neighbors are skipped.
     let samples = [
         (
             sample_pixel_opt(raster, x0 as isize, y0 as isize),
@@ -385,6 +396,7 @@ fn sample_bilinear_opt(
         }
     }
 
+    // If all neighbors are invalid/nodata, report transparent.
     if wsum <= f64::EPSILON {
         return None;
     }
@@ -538,6 +550,8 @@ pub(crate) fn tile_corners_in_source_raster(
     source: &SourceDataset,
     tile_corners_merc: [Pt; 4],
 ) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    // Reproject tile corners from WebMercator to source CRS, then map CRS -> raster
+    // with the inverse georeferencing transform. Rendering interpolates inside these corners.
     let from_merc = Proj::new_known_crs("EPSG:3857", &source.georef.source_crs)?;
     let inverse = source.georef.forward.invert()?;
     let mut out = [Pt { x: 0.0, y: 0.0 }; 4];
@@ -652,7 +666,7 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
         }
     }
 
-    // Fallback: decode via `tiff` crate.
+    // Fallback: decode via `tiff` crate for cases `image` cannot decode.
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut decoder = Decoder::new(reader)?;
@@ -672,6 +686,7 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
         .unwrap_or(1);
 
     if planar_config == 2 && samples_tag > 1 {
+        // Planar TIFF stores each band in separate chunks. Re-interleave to pixel-major layout.
         let chunk_type = decoder.get_chunk_type();
         let total_chunks = match chunk_type {
             ChunkType::Strip => decoder.strip_count()? as usize,
