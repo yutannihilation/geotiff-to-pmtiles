@@ -2,6 +2,11 @@
 
 Small Rust CLI to inspect GeoTIFF headers, estimate covering XYZ tiles, debug resampling, and convert GeoTIFF inputs into PMTiles with AVIF tiles.
 
+Additional docs:
+
+- `docs/CLI.md`: subcommand/options reference
+- `docs/ALGORITHMS.md`: algorithm and data-flow notes
+
 ## Build
 
 ```powershell
@@ -41,4 +46,3 @@ cargo fmt
 cargo check
 cargo test
 ```
-
