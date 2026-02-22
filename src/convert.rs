@@ -82,12 +82,18 @@ pub fn convert(
     println!("Source CRS: {}", georef.source_crs);
     println!("Zoom range: {min_zoom}..{max_zoom}");
 
-    let min_x_merc = corners_merc.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+    let min_x_merc = corners_merc
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::INFINITY, f64::min);
     let max_x_merc = corners_merc
         .iter()
         .map(|p| p.x)
         .fold(f64::NEG_INFINITY, f64::max);
-    let min_y_merc = corners_merc.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    let min_y_merc = corners_merc
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::INFINITY, f64::min);
     let max_y_merc = corners_merc
         .iter()
         .map(|p| p.y)

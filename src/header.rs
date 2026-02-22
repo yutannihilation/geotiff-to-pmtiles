@@ -27,13 +27,25 @@ pub fn dump_header(path: &std::path::Path) -> Result<(), Box<dyn std::error::Err
                 extent.max().y
             );
             println!("GeoKeyDirectory version: {}", keys.key_directory_version);
-            println!("GeoKey revision: {}.{}", keys.key_revision, keys.minor_revision);
+            println!(
+                "GeoKey revision: {}.{}",
+                keys.key_revision, keys.minor_revision
+            );
             println!("Model type: {}", format_opt(keys.model_type));
             println!("Raster type: {}", format_opt_debug(keys.raster_type));
-            println!("Geographic type (EPSG): {}", format_opt(keys.geographic_type));
+            println!(
+                "Geographic type (EPSG): {}",
+                format_opt(keys.geographic_type)
+            );
             println!("Projected type (EPSG): {}", format_opt(keys.projected_type));
-            println!("Geographic citation: {}", format_opt(keys.geog_citation.as_deref()));
-            println!("Projection citation: {}", format_opt(keys.proj_citation.as_deref()));
+            println!(
+                "Geographic citation: {}",
+                format_opt(keys.geog_citation.as_deref())
+            );
+            println!(
+                "Projection citation: {}",
+                format_opt(keys.proj_citation.as_deref())
+            );
         }
         Err(err) => {
             println!("GeoTIFF full decode: unsupported ({err})");
@@ -68,11 +80,12 @@ fn dump_header_tags(path: &std::path::Path) -> Result<(), Box<dyn std::error::Er
             .unwrap_or_else(|| "n/a".to_string())
     );
 
-    let photometric = get_u16_tag(&mut decoder, Tag::PhotometricInterpretation)?
-        .map(|v| match PhotometricInterpretation::from_u16(v) {
+    let photometric = get_u16_tag(&mut decoder, Tag::PhotometricInterpretation)?.map(|v| {
+        match PhotometricInterpretation::from_u16(v) {
             Some(value) => format!("{value:?}"),
             None => format!("Unknown({v})"),
-        });
+        }
+    });
     println!("Photometric interpretation: {}", format_opt(photometric));
 
     let compression =

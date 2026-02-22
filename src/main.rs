@@ -14,14 +14,14 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         Commands::DumpHeader { input } => header::dump_header(&input),
-        Commands::CoverTile { input, src_crs } => cover_tile::cover_tile(&input, src_crs.as_deref()),
+        Commands::CoverTile { input, src_crs } => {
+            cover_tile::cover_tile(&input, src_crs.as_deref())
+        }
         Commands::ResampleTiles {
             input,
             src_crs,
             resampling,
-        } => {
-            resample::resample_tiles(&input, src_crs.as_deref(), resampling)
-        }
+        } => resample::resample_tiles(&input, src_crs.as_deref(), resampling),
         Commands::Convert {
             input,
             output,

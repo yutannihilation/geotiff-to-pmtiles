@@ -199,7 +199,11 @@ pub fn resample_tiles(
     Ok(())
 }
 
-pub(crate) fn render_tile_debug(raster: &Raster, corners: [Pt; 4], resampling: Resampling) -> Vec<u8> {
+pub(crate) fn render_tile_debug(
+    raster: &Raster,
+    corners: [Pt; 4],
+    resampling: Resampling,
+) -> Vec<u8> {
     const SIZE: usize = 512;
     let mut out = vec![0_u8; SIZE * SIZE * 4];
 
@@ -335,7 +339,10 @@ pub(crate) struct Georef {
     pub(crate) used_tfw: bool,
 }
 
-pub(crate) fn read_georef(path: &std::path::Path, src_crs: Option<&str>) -> Result<Georef, Box<dyn std::error::Error>> {
+pub(crate) fn read_georef(
+    path: &std::path::Path,
+    src_crs: Option<&str>,
+) -> Result<Georef, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut decoder = Decoder::new(reader)?;
@@ -521,9 +528,18 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
     } else {
         data.len() / pixel_count
     };
-    let stride = if derived_stride == 0 { samples_tag.max(1) } else { derived_stride };
+    let stride = if derived_stride == 0 {
+        samples_tag.max(1)
+    } else {
+        derived_stride
+    };
 
-    Ok(Raster { width, height, stride, data })
+    Ok(Raster {
+        width,
+        height,
+        stride,
+        data,
+    })
 }
 
 fn decoding_result_to_u8(image: DecodingResult) -> Vec<u8> {
