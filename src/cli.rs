@@ -41,8 +41,8 @@ pub enum Commands {
     Convert {
         /// Input GeoTIFF path or glob pattern (e.g. "data/*.tif").
         input: String,
-        /// Output PMTiles path.
-        #[arg(long, default_value = "out.pmtiles")]
+        /// Output PMTiles path (positional; default: out.pmtiles).
+        #[arg(default_value = "out.pmtiles")]
         output: std::path::PathBuf,
         /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
         #[arg(long)]

@@ -12,7 +12,10 @@ Pre-built binaries can be found at [Releases](https://github.com/yutannihilation
 
 ```sh
 # defaults: min zoom auto, max zoom = min + 3
-geotiff-to-pmtiles convert "./data/*.tif" --src-crs EPSG:6677 --output out.pmtiles
+geotiff-to-pmtiles convert "./data/*.tif" out.pmtiles
+
+# if CRS is missing, use --src-crs option
+geotiff-to-pmtiles convert --src-crs EPSG:6677 "./data/*.tif" out.pmtiles
 ```
 
 ### Debug commands
