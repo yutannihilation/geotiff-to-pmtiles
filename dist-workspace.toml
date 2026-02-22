@@ -24,3 +24,4 @@ nasm = '*'
 
 [dist.dependencies.chocolatey]
 nasm = '*'
+sqlite = '*'

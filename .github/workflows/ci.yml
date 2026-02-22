@@ -32,9 +32,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install nasm
 
-      - name: Install NASM (Windows)
+      - name: Install NASM & SQLite (Windows)
         if: runner.os == 'Windows'
-        run: choco install nasm -y
+        run: choco install nasm sqlite -y
 
       - name: Format check
         if: runner.os == 'Linux'
