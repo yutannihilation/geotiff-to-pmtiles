@@ -1,4 +1,5 @@
 mod cli;
+mod convert;
 mod cover_tile;
 mod header;
 mod resample;
@@ -21,6 +22,12 @@ fn main() -> ExitCode {
         } => {
             resample::resample_tiles(&input, src_crs.as_deref(), resampling)
         }
+        Commands::Convert {
+            input,
+            output,
+            src_crs,
+            resampling,
+        } => convert::convert(&input, &output, src_crs.as_deref(), resampling),
     };
 
     match result {

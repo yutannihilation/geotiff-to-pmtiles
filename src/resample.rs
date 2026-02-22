@@ -13,13 +13,13 @@ use tiff::decoder::{ChunkType, Decoder, DecodingResult};
 use tiff::tags::Tag;
 
 #[derive(Debug, Clone, Copy)]
-struct Pt {
-    x: f64,
-    y: f64,
+pub(crate) struct Pt {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum GeoTransform {
+pub(crate) enum GeoTransform {
     TiePointAndPixelScale {
         raster_x: f64,
         raster_y: f64,
@@ -39,7 +39,7 @@ enum GeoTransform {
 }
 
 impl GeoTransform {
-    fn apply(self, p: Pt) -> Pt {
+    pub(crate) fn apply(self, p: Pt) -> Pt {
         match self {
             GeoTransform::TiePointAndPixelScale {
                 raster_x,
@@ -66,7 +66,7 @@ impl GeoTransform {
         }
     }
 
-    fn invert(self) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn invert(self) -> Result<Self, Box<dyn std::error::Error>> {
         match self {
             GeoTransform::TiePointAndPixelScale {
                 raster_x,
@@ -113,11 +113,11 @@ impl GeoTransform {
     }
 }
 
-struct Raster {
-    width: usize,
-    height: usize,
-    stride: usize,
-    data: Vec<u8>,
+pub(crate) struct Raster {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) stride: usize,
+    pub(crate) data: Vec<u8>,
 }
 
 pub fn resample_tiles(
@@ -199,7 +199,7 @@ pub fn resample_tiles(
     Ok(())
 }
 
-fn render_tile_debug(raster: &Raster, corners: [Pt; 4], resampling: Resampling) -> Vec<u8> {
+pub(crate) fn render_tile_debug(raster: &Raster, corners: [Pt; 4], resampling: Resampling) -> Vec<u8> {
     const SIZE: usize = 512;
     let mut out = vec![0_u8; SIZE * SIZE * 4];
 
@@ -307,28 +307,35 @@ fn sample_bilinear(raster: &Raster, x: f64, y: f64) -> [u8; 4] {
     out
 }
 
-fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
+pub(crate) fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
     Pt {
         x: a.x + (b.x - a.x) * t,
         y: a.y + (b.y - a.y) * t,
     }
 }
 
-fn write_avif(path: &str, rgba: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn write_avif(path: &str, rgba: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(path)?;
     let encoder = AvifEncoder::new(file);
     encoder.write_image(rgba, 512, 512, ExtendedColorType::Rgba8)?;
     Ok(())
 }
 
-struct Georef {
-    source_crs: String,
-    forward: GeoTransform,
-    raster_offset: f64,
-    used_tfw: bool,
+pub(crate) fn encode_avif(rgba: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut out = Vec::new();
+    let encoder = AvifEncoder::new(&mut out);
+    encoder.write_image(rgba, 512, 512, ExtendedColorType::Rgba8)?;
+    Ok(out)
 }
 
-fn read_georef(path: &std::path::Path, src_crs: Option<&str>) -> Result<Georef, Box<dyn std::error::Error>> {
+pub(crate) struct Georef {
+    pub(crate) source_crs: String,
+    pub(crate) forward: GeoTransform,
+    pub(crate) raster_offset: f64,
+    pub(crate) used_tfw: bool,
+}
+
+pub(crate) fn read_georef(path: &std::path::Path, src_crs: Option<&str>) -> Result<Georef, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut decoder = Decoder::new(reader)?;
@@ -416,7 +423,7 @@ fn read_georef(path: &std::path::Path, src_crs: Option<&str>) -> Result<Georef, 
     })
 }
 
-fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std::error::Error>> {
+pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std::error::Error>> {
     // Prefer `image` crate decoding for proper RGB/RGBA output when TIFF has multiple bands.
     if let Ok(reader) = ImageReader::open(path) {
         if let Ok(dynamic) = reader.decode() {
@@ -688,7 +695,7 @@ fn geokey_short(data: &[u16], target_key: u16) -> Option<u16> {
     None
 }
 
-fn largest_edge_length(corners: &[Pt]) -> Result<f64, Box<dyn std::error::Error>> {
+pub(crate) fn largest_edge_length(corners: &[Pt]) -> Result<f64, Box<dyn std::error::Error>> {
     if corners.len() < 4 {
         return Err("expected 4 corners".into());
     }
@@ -707,7 +714,7 @@ fn distance(a: Pt, b: Pt) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn zoom_for_tile_size(required_size: f64) -> u8 {
+pub(crate) fn zoom_for_tile_size(required_size: f64) -> u8 {
     const MAX_ZOOM: u8 = 24;
     const ORIGIN_SHIFT: f64 = 20_037_508.342_789_244;
     let world_size = 2.0 * ORIGIN_SHIFT;
@@ -722,7 +729,7 @@ fn zoom_for_tile_size(required_size: f64) -> u8 {
     0
 }
 
-fn webmerc_to_tile(x: f64, y: f64, z: u8) -> (u32, u32) {
+pub(crate) fn webmerc_to_tile(x: f64, y: f64, z: u8) -> (u32, u32) {
     const ORIGIN_SHIFT: f64 = 20_037_508.342_789_244;
     let n = (1_u32 << z) as f64;
 
@@ -735,14 +742,14 @@ fn webmerc_to_tile(x: f64, y: f64, z: u8) -> (u32, u32) {
     (xtile, ytile)
 }
 
-struct TileBounds {
-    ul: Pt,
-    ur: Pt,
-    lr: Pt,
-    ll: Pt,
+pub(crate) struct TileBounds {
+    pub(crate) ul: Pt,
+    pub(crate) ur: Pt,
+    pub(crate) lr: Pt,
+    pub(crate) ll: Pt,
 }
 
-fn tile_bounds_webmerc(z: u8, x: u32, y: u32) -> TileBounds {
+pub(crate) fn tile_bounds_webmerc(z: u8, x: u32, y: u32) -> TileBounds {
     const ORIGIN_SHIFT: f64 = 20_037_508.342_789_244;
     let n = (1_u32 << z) as f64;
     let tile_size = (2.0 * ORIGIN_SHIFT) / n;

@@ -34,6 +34,20 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = Resampling::Nearest)]
         resampling: Resampling,
     },
+    /// Convert GeoTIFF to PMTiles with AVIF image tiles.
+    Convert {
+        /// Path to a GeoTIFF file.
+        input: std::path::PathBuf,
+        /// Output PMTiles path.
+        #[arg(long, default_value = "out.pmtiles")]
+        output: std::path::PathBuf,
+        /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
+        #[arg(long)]
+        src_crs: Option<String>,
+        /// Resampling method.
+        #[arg(long, value_enum, default_value_t = Resampling::Nearest)]
+        resampling: Resampling,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
