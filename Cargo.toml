@@ -1,6 +1,6 @@
 [package]
 name = "geotiff-to-pmtiles"
-version = "0.0.1-rc.10"
+version = "0.0.1-rc.11"
 edition = "2024"
 repository = "https://github.com/yutannihilation/geotiff-to-pmtiles"
 
