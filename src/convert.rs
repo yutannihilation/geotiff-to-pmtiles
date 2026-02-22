@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 
-use pmtiles::{Compression, PmTilesWriter, TileCoord, TileType};
+use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
+use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
@@ -122,6 +123,7 @@ pub fn convert(
             }
         }
 
+        let mut work_items = Vec::with_capacity(tiles.len());
         for (x, y) in tiles {
             let bounds = tile_bounds_webmerc(z, x, y);
             let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
@@ -131,10 +133,23 @@ pub fn convert(
                 let (sx, sy) = from_merc.transform2((p.x, p.y))?;
                 tile_raster_corners[i] = inverse.apply(Pt { x: sx, y: sy });
             }
+            work_items.push((z, x, y, tile_raster_corners));
+        }
 
-            let rgba = render_tile_debug(&raster, tile_raster_corners, resampling);
-            let avif = encode_avif(&rgba)?;
-            let coord = TileCoord::new(z, x, y)?;
+        let mut encoded_tiles = work_items
+            .into_par_iter()
+            .map(|(z, x, y, corners)| -> Result<(u64, TileCoord, Vec<u8>), String> {
+                let rgba = render_tile_debug(&raster, corners, resampling);
+                let avif = encode_avif(&rgba).map_err(|e| e.to_string())?;
+                let coord = TileCoord::new(z, x, y).map_err(|e| e.to_string())?;
+                let tile_id = TileId::from(coord).value();
+                Ok((tile_id, coord, avif))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+        encoded_tiles.sort_by_key(|(tile_id, _, _)| *tile_id);
+        for (_, coord, avif) in encoded_tiles {
             writer.add_raw_tile(coord, &avif)?;
         }
     }
