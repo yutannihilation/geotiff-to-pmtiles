@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
@@ -102,6 +104,11 @@ pub fn convert(
                 tiles.insert((x, y));
             }
         }
+        let total_tiles = tiles.len();
+        println!("z={z}: rendering {total_tiles} tile(s) [0%]");
+
+        let progress_counter = Arc::new(AtomicUsize::new(0));
+        let progress_mark = Arc::new(AtomicUsize::new(0));
 
         let mut encoded_tiles = tiles
             .into_par_iter()
@@ -121,16 +128,31 @@ pub fn convert(
                 let avif = encode_avif(&rgba).map_err(|e| e.to_string())?;
                 let coord = TileCoord::new(z, x, y).map_err(|e| e.to_string())?;
                 let tile_id = TileId::from(coord).value();
+
+                let done = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let percent = (done * 100) / total_tiles.max(1);
+                let bucket = percent / 10;
+                let prev = progress_mark.load(Ordering::Relaxed);
+                if bucket > prev
+                    && progress_mark
+                        .compare_exchange(prev, bucket, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    println!("z={z}: {percent}% ({done}/{total_tiles})");
+                }
+
                 Ok((tile_id, coord, avif))
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        println!("z={z}: render complete [100%], writing tiles...");
 
         // PMTiles writer expects deterministic tile order.
         encoded_tiles.sort_by_key(|(tile_id, _, _)| *tile_id);
         for (_, coord, avif) in encoded_tiles {
             writer.add_raw_tile(coord, &avif)?;
         }
+        println!("z={z}: write complete");
     }
 
     writer.finalize()?;
