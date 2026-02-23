@@ -138,44 +138,11 @@ For each output row `j`:
 
 This means each output pixel `(i, j)` gets a source-space floating coordinate `(x, y)`.
 
-ASCII view:
-
-```
-Source raster space for one tile
-
-UL o----------------------o UR
-   |\                    /|
-   | \   scanline j     / |
-   |  o----*----*----o    |
-   | /                \   |
-   |/                  \  |
-LL o----------------------o LR
-
 - corners are projected tile corners in source raster coordinates
 - each row is interpolated from left edge to right edge
 - each * is a sampled source coordinate for a target pixel
-```
 
-Minimal SVG (copy into an `.svg` file to view):
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" width="520" height="260" viewBox="0 0 520 260">
-  <rect width="100%" height="100%" fill="#ffffff"/>
-  <polygon points="80,40 420,60 390,210 60,190" fill="#eef5ff" stroke="#2a4f7a" stroke-width="2"/>
-  <line x1="72" y1="120" x2="406" y2="138" stroke="#2a4f7a" stroke-width="2"/>
-  <circle cx="72" cy="120" r="4" fill="#2a4f7a"/>
-  <circle cx="406" cy="138" r="4" fill="#2a4f7a"/>
-  <circle cx="150" cy="124" r="4" fill="#d33"/>
-  <circle cx="230" cy="128" r="4" fill="#d33"/>
-  <circle cx="310" cy="132" r="4" fill="#d33"/>
-  <text x="70" y="30" font-family="monospace" font-size="14">UL</text>
-  <text x="422" y="52" font-family="monospace" font-size="14">UR</text>
-  <text x="45" y="204" font-family="monospace" font-size="14">LL</text>
-  <text x="392" y="228" font-family="monospace" font-size="14">LR</text>
-  <text x="170" y="110" font-family="monospace" font-size="13">scanline interpolation</text>
-  <text x="170" y="154" font-family="monospace" font-size="13" fill="#d33">sample points</text>
-</svg>
-```
+![](./interpolation.svg)
 
 ## Step 3: Sample nearest or bilinear, including nodata
 
