@@ -124,62 +124,51 @@ pub(crate) fn decoding_result_to_u8(image: DecodingResult) -> Vec<u8> {
     // Normalize all numeric TIFF sample formats to a common u8 channel representation.
     match image {
         DecodingResult::U8(v) => v,
-        DecodingResult::U16(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            u16::MIN as f64,
-            u16::MAX as f64,
-        ),
-        DecodingResult::U32(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            u32::MIN as f64,
-            u32::MAX as f64,
-        ),
-        DecodingResult::U64(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            0.0,
-            u64::MAX as f64,
-        ),
-        DecodingResult::I8(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            i8::MIN as f64,
-            i8::MAX as f64,
-        ),
-        DecodingResult::I16(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            i16::MIN as f64,
-            i16::MAX as f64,
-        ),
-        DecodingResult::I32(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            i32::MIN as f64,
-            i32::MAX as f64,
-        ),
-        DecodingResult::I64(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            i64::MIN as f64,
-            i64::MAX as f64,
-        ),
-        DecodingResult::F32(v) => normalize_to_u8(
-            v.iter().map(|x| *x as f64).collect::<Vec<_>>(),
-            f32::MIN as f64,
-            f32::MAX as f64,
-        ),
-        DecodingResult::F16(v) => normalize_to_u8(
-            v.iter().map(|x| x.to_f32() as f64).collect::<Vec<_>>(),
-            f32::MIN as f64,
-            f32::MAX as f64,
-        ),
-        DecodingResult::F64(v) => normalize_to_u8(v, f64::MIN, f64::MAX),
+        DecodingResult::U16(v) => {
+            normalize_slice_to_u8(&v, u16::MIN as f64, u16::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::U32(v) => {
+            normalize_slice_to_u8(&v, u32::MIN as f64, u32::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::U64(v) => normalize_slice_to_u8(&v, 0.0, u64::MAX as f64, |x| *x as f64),
+        DecodingResult::I8(v) => {
+            normalize_slice_to_u8(&v, i8::MIN as f64, i8::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::I16(v) => {
+            normalize_slice_to_u8(&v, i16::MIN as f64, i16::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::I32(v) => {
+            normalize_slice_to_u8(&v, i32::MIN as f64, i32::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::I64(v) => {
+            normalize_slice_to_u8(&v, i64::MIN as f64, i64::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::F32(v) => {
+            normalize_slice_to_u8(&v, f32::MIN as f64, f32::MAX as f64, |x| *x as f64)
+        }
+        DecodingResult::F16(v) => {
+            normalize_slice_to_u8(&v, f32::MIN as f64, f32::MAX as f64, |x| x.to_f32() as f64)
+        }
+        DecodingResult::F64(v) => normalize_slice_to_u8(&v, f64::MIN, f64::MAX, |x| *x),
     }
 }
 
-fn normalize_to_u8(values: Vec<f64>, fallback_min: f64, fallback_max: f64) -> Vec<u8> {
+fn normalize_slice_to_u8<T, F>(
+    values: &[T],
+    fallback_min: f64,
+    fallback_max: f64,
+    to_f64: F,
+) -> Vec<u8>
+where
+    F: Fn(&T) -> f64 + Copy,
+{
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
-    for v in &values {
-        if v.is_finite() {
-            min = min.min(*v);
-            max = max.max(*v);
+    for v in values {
+        let n = to_f64(v);
+        if n.is_finite() {
+            min = min.min(n);
+            max = max.max(n);
         }
     }
 
@@ -195,9 +184,9 @@ fn normalize_to_u8(values: Vec<f64>, fallback_min: f64, fallback_max: f64) -> Ve
     }
 
     values
-        .into_iter()
+        .iter()
         .map(|v| {
-            let t = ((v - min) / range).clamp(0.0, 1.0);
+            let t = ((to_f64(v) - min) / range).clamp(0.0, 1.0);
             (t * 255.0).round() as u8
         })
         .collect()

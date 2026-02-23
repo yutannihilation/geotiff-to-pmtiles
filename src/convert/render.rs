@@ -5,6 +5,15 @@ use super::TILE_SIZE;
 use super::cache::GlobalChunkCache;
 use super::source::SourceSampler;
 
+#[derive(Clone, Copy)]
+struct RowSampleCursor {
+    source_idx: usize,
+    x: f64,
+    y: f64,
+    dx: f64,
+    dy: f64,
+}
+
 pub(super) fn render_tile_chunked(
     sources: &mut [SourceSampler],
     selected: &[(usize, [Pt; 4])],
@@ -14,52 +23,74 @@ pub(super) fn render_tile_chunked(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Render one 512x512 output tile in scanline order.
     let mut out = vec![0_u8; TILE_SIZE * TILE_SIZE * 4];
+    let denom = (TILE_SIZE as f64 - 1.0).max(1.0);
     for j in 0..TILE_SIZE {
-        let v = if TILE_SIZE > 1 {
-            j as f64 / (TILE_SIZE as f64 - 1.0)
-        } else {
-            0.0
-        };
-        for i in 0..TILE_SIZE {
-            let u = if TILE_SIZE > 1 {
-                i as f64 / (TILE_SIZE as f64 - 1.0)
-            } else {
-                0.0
-            };
-            let px = match resampling {
-                Resampling::Nearest => {
-                    sample_nearest_multi(sources, selected, u, v, nodata, cache)?
+        let v = if TILE_SIZE > 1 { j as f64 / denom } else { 0.0 };
+        let mut cursors = build_row_cursors(selected, v, denom);
+        match resampling {
+            Resampling::Nearest => {
+                for i in 0..TILE_SIZE {
+                    let px = sample_nearest_multi(sources, &cursors, nodata, cache)?;
+                    let base = (j * TILE_SIZE + i) * 4;
+                    out[base] = px[0];
+                    out[base + 1] = px[1];
+                    out[base + 2] = px[2];
+                    out[base + 3] = px[3];
+                    advance_cursors(&mut cursors);
                 }
-                Resampling::Bilinear => {
-                    sample_bilinear_multi(sources, selected, u, v, nodata, cache)?
+            }
+            Resampling::Bilinear => {
+                for i in 0..TILE_SIZE {
+                    let px = sample_bilinear_multi(sources, &cursors, nodata, cache)?;
+                    let base = (j * TILE_SIZE + i) * 4;
+                    out[base] = px[0];
+                    out[base + 1] = px[1];
+                    out[base + 2] = px[2];
+                    out[base + 3] = px[3];
+                    advance_cursors(&mut cursors);
                 }
-            };
-            let base = (j * TILE_SIZE + i) * 4;
-            out[base] = px[0];
-            out[base + 1] = px[1];
-            out[base + 2] = px[2];
-            out[base + 3] = px[3];
+            }
         }
     }
     Ok(out)
 }
 
+fn build_row_cursors(selected: &[(usize, [Pt; 4])], v: f64, denom: f64) -> Vec<RowSampleCursor> {
+    let mut cursors = Vec::with_capacity(selected.len());
+    for (source_idx, corners) in selected {
+        let left = lerp(corners[0], corners[3], v);
+        let right = lerp(corners[1], corners[2], v);
+        let dx = (right.x - left.x) / denom;
+        let dy = (right.y - left.y) / denom;
+        cursors.push(RowSampleCursor {
+            source_idx: *source_idx,
+            x: left.x,
+            y: left.y,
+            dx,
+            dy,
+        });
+    }
+    cursors
+}
+
+fn advance_cursors(cursors: &mut [RowSampleCursor]) {
+    for c in cursors {
+        c.x += c.dx;
+        c.y += c.dy;
+    }
+}
+
 fn sample_nearest_multi(
     samplers: &mut [SourceSampler],
-    selected: &[(usize, [Pt; 4])],
-    u: f64,
-    v: f64,
+    cursors: &[RowSampleCursor],
     nodata: Option<NoDataSpec>,
     cache: &mut GlobalChunkCache,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // Nearest policy across sources: choose globally nearest valid sample in raster pixel space.
     let mut best: Option<([u8; 4], f64)> = None;
-    for (idx, corners) in selected {
-        let left = lerp(corners[0], corners[3], v);
-        let right = lerp(corners[1], corners[2], v);
-        let p = lerp(left, right, u);
+    for c in cursors {
         if let Some((px, dist2)) =
-            sample_nearest_with_dist(samplers, *idx, p.x, p.y, nodata, cache)?
+            sample_nearest_with_dist(samplers, c.source_idx, c.x, c.y, nodata, cache)?
         {
             match best {
                 Some((_, d)) if d <= dist2 => {}
@@ -72,18 +103,13 @@ fn sample_nearest_multi(
 
 fn sample_bilinear_multi(
     samplers: &mut [SourceSampler],
-    selected: &[(usize, [Pt; 4])],
-    u: f64,
-    v: f64,
+    cursors: &[RowSampleCursor],
     nodata: Option<NoDataSpec>,
     cache: &mut GlobalChunkCache,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // Bilinear policy across sources: first source in input order that yields a valid sample wins.
-    for (idx, corners) in selected {
-        let left = lerp(corners[0], corners[3], v);
-        let right = lerp(corners[1], corners[2], v);
-        let p = lerp(left, right, u);
-        if let Some(px) = sample_bilinear_opt(samplers, *idx, p.x, p.y, nodata, cache)? {
+    for c in cursors {
+        if let Some(px) = sample_bilinear_opt(samplers, c.source_idx, c.x, c.y, nodata, cache)? {
             return Ok(px);
         }
     }
