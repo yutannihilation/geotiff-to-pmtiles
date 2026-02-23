@@ -241,10 +241,31 @@ pub fn convert(
         // Build tile list directly from the inclusive bbox range.
         // This avoids the previous BTreeSet allocation + copy pass.
         // We only keep one ordering step: PMTiles tile id sort.
+        // Empty tiles (no source bbox overlap) are filtered out here so they are
+        // not rendered/encoded and do not get an entry in PMTiles.
         let tile_capacity = (x_max - x_min + 1) as usize * (y_max - y_min + 1) as usize;
         let mut tile_list = Vec::with_capacity(tile_capacity);
+        let mut skipped_empty = 0usize;
         for y in y_min..=y_max {
             for x in x_min..=x_max {
+                let bounds = tile_bounds_webmerc(z, x, y);
+                let tile_min_x = bounds.ul.x.min(bounds.lr.x);
+                let tile_max_x = bounds.ul.x.max(bounds.lr.x);
+                let tile_min_y = bounds.ul.y.min(bounds.lr.y);
+                let tile_max_y = bounds.ul.y.max(bounds.lr.y);
+                let intersects_any =
+                    source_bounds
+                        .iter()
+                        .any(|(smin_x, smin_y, smax_x, smax_y)| {
+                            !(tile_max_x < *smin_x
+                                || tile_min_x > *smax_x
+                                || tile_max_y < *smin_y
+                                || tile_min_y > *smax_y)
+                        });
+                if !intersects_any {
+                    skipped_empty += 1;
+                    continue;
+                }
                 let coord = TileCoord::new(z, x, y)?;
                 let tile_id = TileId::from(coord).value();
                 tile_list.push((tile_id, x, y));
@@ -253,6 +274,9 @@ pub fn convert(
         tile_list.sort_by_key(|(tile_id, _, _)| *tile_id);
 
         let total_tiles = tile_list.len();
+        if skipped_empty > 0 {
+            println!("z={z}: skipped {skipped_empty} empty tile(s)");
+        }
         println!("z={z}: rendering {total_tiles} tile(s) [0%]");
         let (encoded_tx, encoded_rx) =
             mpsc::channel::<(usize, u32, u32, Result<Vec<u8>, String>)>();
