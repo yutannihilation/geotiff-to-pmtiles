@@ -85,3 +85,70 @@ fn raster_dimensions(path: &std::path::Path) -> Result<(usize, usize), Box<dyn s
     let (w, h) = decoder.dimensions()?;
     Ok((w as usize, h as usize))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir() -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("geotiff_to_pmtiles_inputs_test_{ts}"));
+        fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
+
+    #[test]
+    fn has_glob_meta_detects_meta_chars() {
+        assert!(has_glob_meta("*.tif"));
+        assert!(has_glob_meta("a?[0-9].tif"));
+        assert!(!has_glob_meta("plain.tif"));
+    }
+
+    #[test]
+    fn resolve_input_paths_accepts_literal_file() {
+        let dir = make_temp_dir();
+        let p = dir.join("a.tif");
+        fs::write(&p, b"x").expect("write file");
+
+        let input = vec![p.to_string_lossy().to_string()];
+        let out = resolve_input_paths(&input).expect("resolve literal path");
+        assert_eq!(out, vec![p.clone()]);
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn resolve_input_paths_glob_and_dedup() {
+        let dir = make_temp_dir();
+        let p1 = dir.join("a.tif");
+        let p2 = dir.join("b.tif");
+        fs::write(&p1, b"x").expect("write a.tif");
+        fs::write(&p2, b"x").expect("write b.tif");
+
+        let glob = dir.join("*.tif").to_string_lossy().to_string();
+        let input = vec![glob, p1.to_string_lossy().to_string()];
+        let out = resolve_input_paths(&input).expect("resolve glob");
+
+        assert_eq!(out, vec![p1.clone(), p2.clone()]);
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn resolve_input_paths_reports_errors() {
+        let err1 = resolve_input_paths(&[]).expect_err("expected empty-input error");
+        assert!(err1.to_string().contains("no input files matched"));
+
+        let literal = vec!["definitely_missing_file.tif".to_string()];
+        let err2 = resolve_input_paths(&literal).expect_err("expected missing literal error");
+        assert!(err2.to_string().contains("input path matched no files"));
+
+        let pattern = vec!["definitely_missing_*.tif".to_string()];
+        let err3 = resolve_input_paths(&pattern).expect_err("expected missing glob error");
+        assert!(err3.to_string().contains("glob pattern matched no files"));
+    }
+}

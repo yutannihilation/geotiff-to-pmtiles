@@ -193,3 +193,38 @@ where
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoding_u8_is_passthrough() {
+        let out = decoding_result_to_u8(DecodingResult::U8(vec![1, 2, 3]));
+        assert_eq!(out, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn decoding_u16_normalizes_to_full_range() {
+        let out = decoding_result_to_u8(DecodingResult::U16(vec![0, 65_535]));
+        assert_eq!(out, vec![0, 255]);
+    }
+
+    #[test]
+    fn decoding_i16_normalizes_min_to_max() {
+        let out = decoding_result_to_u8(DecodingResult::I16(vec![-10, 0, 10]));
+        assert_eq!(out, vec![0, 128, 255]);
+    }
+
+    #[test]
+    fn decoding_constant_values_falls_back_safely() {
+        let out = decoding_result_to_u8(DecodingResult::U16(vec![5, 5, 5]));
+        assert_eq!(out, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn decoding_non_finite_f32_values_is_stable() {
+        let out = decoding_result_to_u8(DecodingResult::F32(vec![f32::NAN, 0.0, f32::INFINITY]));
+        assert_eq!(out, vec![0, 128, 255]);
+    }
+}

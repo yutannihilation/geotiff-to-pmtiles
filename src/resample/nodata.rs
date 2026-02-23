@@ -38,3 +38,40 @@ pub(crate) fn parse_nodata(
         _ => Err(format!("invalid --nodata value: {value}. Use '0' or '255,255,255'.").into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_empty_as_none() {
+        assert!(parse_nodata(None).unwrap().is_none());
+        assert!(parse_nodata(Some("")).unwrap().is_none());
+        assert!(parse_nodata(Some("   ")).unwrap().is_none());
+    }
+
+    #[test]
+    fn parses_gray_value() {
+        let parsed = parse_nodata(Some("42")).unwrap();
+        match parsed {
+            Some(NoDataSpec::Gray(v)) => assert_eq!(v, 42),
+            _ => panic!("expected gray nodata"),
+        }
+    }
+
+    #[test]
+    fn parses_rgb_value_with_spaces() {
+        let parsed = parse_nodata(Some(" 1, 2 ,3 ")).unwrap();
+        match parsed {
+            Some(NoDataSpec::Rgb(r, g, b)) => assert_eq!((r, g, b), (1, 2, 3)),
+            _ => panic!("expected rgb nodata"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_values() {
+        assert!(parse_nodata(Some("1,2")).is_err());
+        assert!(parse_nodata(Some("x")).is_err());
+        assert!(parse_nodata(Some("1,2,300")).is_err());
+    }
+}

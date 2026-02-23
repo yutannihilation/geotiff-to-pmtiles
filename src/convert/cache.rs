@@ -161,3 +161,75 @@ impl GlobalChunkCache {
         self.tail = Some(key);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(source_idx: usize, chunk_idx: u32) -> ChunkKey {
+        ChunkKey {
+            source_idx,
+            chunk_idx,
+        }
+    }
+
+    fn chunk(bytes: usize) -> ChunkData {
+        ChunkData {
+            width: 1,
+            height: 1,
+            stride: bytes.max(1),
+            data: vec![0; bytes],
+        }
+    }
+
+    #[test]
+    fn evicts_oldest_when_budget_exceeded() {
+        let mut cache = GlobalChunkCache::new(5);
+        let k1 = key(0, 1);
+        let k2 = key(0, 2);
+
+        cache.insert(k1, chunk(3));
+        cache.insert(k2, chunk(3));
+
+        assert!(!cache.contains(k1));
+        assert!(cache.contains(k2));
+    }
+
+    #[test]
+    fn get_touches_entry_for_lru_order() {
+        let mut cache = GlobalChunkCache::new(6);
+        let k1 = key(0, 1);
+        let k2 = key(0, 2);
+        let k3 = key(0, 3);
+
+        cache.insert(k1, chunk(3));
+        cache.insert(k2, chunk(3));
+        let _ = cache.get(k1);
+        cache.insert(k3, chunk(3));
+
+        assert!(cache.contains(k1));
+        assert!(!cache.contains(k2));
+        assert!(cache.contains(k3));
+    }
+
+    #[test]
+    fn replacing_existing_key_updates_size() {
+        let mut cache = GlobalChunkCache::new(10);
+        let k = key(1, 1);
+        cache.insert(k, chunk(4));
+        assert_eq!(cache.used_bytes, 4);
+
+        cache.insert(k, chunk(2));
+        assert_eq!(cache.used_bytes, 2);
+        assert_eq!(cache.get(k).map(|c| c.data.len()), Some(2));
+    }
+
+    #[test]
+    fn oversized_item_is_kept_when_cache_empty() {
+        let mut cache = GlobalChunkCache::new(2);
+        let k = key(9, 9);
+        cache.insert(k, chunk(5));
+        assert!(cache.contains(k));
+        assert_eq!(cache.used_bytes, 5);
+    }
+}
