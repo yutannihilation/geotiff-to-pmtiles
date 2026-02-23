@@ -12,8 +12,8 @@ use tiff::tags::Tag;
 use crate::cli::Resampling;
 use crate::resample::{
     Georef, NoDataSpec, Pt, decoding_result_to_u8, encode_avif, lerp, load_source_metadata,
-    parse_nodeta, source_corners_merc_meta, tile_bounds_webmerc, tile_corners_in_source_raster_meta,
-    webmerc_to_tile, zoom_for_tile_size,
+    parse_nodeta, source_corners_merc_meta, tile_bounds_webmerc,
+    tile_corners_in_source_raster_meta, webmerc_to_tile, zoom_for_tile_size,
 };
 
 const TILE_SIZE: usize = 512;
@@ -111,7 +111,11 @@ struct ChunkedTiffSampler {
 }
 
 impl ChunkedTiffSampler {
-    fn open(path: &std::path::Path, width: usize, height: usize) -> Result<Self, Box<dyn std::error::Error>> {
+    fn open(
+        path: &std::path::Path,
+        width: usize,
+        height: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut decoder = Decoder::new(reader)?;
@@ -153,11 +157,7 @@ impl ChunkedTiffSampler {
         })
     }
 
-    fn chunk_and_local(
-        &self,
-        xi: isize,
-        yi: isize,
-    ) -> Option<(u32, usize, usize)> {
+    fn chunk_and_local(&self, xi: isize, yi: isize) -> Option<(u32, usize, usize)> {
         // Map absolute pixel coordinate -> (chunk index, local x/y in chunk).
         if xi < 0 || yi < 0 || xi >= self.width as isize || yi >= self.height as isize {
             return None;
@@ -243,13 +243,18 @@ impl SourceSampler {
                 let Some((chunk_idx, lx, ly)) = s.chunk_and_local(xi, yi) else {
                     return Ok(None);
                 };
-                let key = ChunkKey { source_idx, chunk_idx };
+                let key = ChunkKey {
+                    source_idx,
+                    chunk_idx,
+                };
                 // Decode only when missing in cache; neighboring pixels tend to hit.
                 if cache.get(key).is_none() {
                     let chunk = s.read_chunk_data(chunk_idx)?;
                     cache.insert(key, chunk);
                 }
-                Ok(cache.get(key).and_then(|chunk| pixel_from_chunk(chunk, lx, ly)))
+                Ok(cache
+                    .get(key)
+                    .and_then(|chunk| pixel_from_chunk(chunk, lx, ly)))
             }
             SourceReader::FullDeferred(raster_opt) => {
                 if raster_opt.is_none() {
@@ -273,7 +278,11 @@ impl SourceSampler {
     }
 }
 
-fn sample_pixel_raster_opt(raster: &crate::resample::Raster, xi: isize, yi: isize) -> Option<[u8; 4]> {
+fn sample_pixel_raster_opt(
+    raster: &crate::resample::Raster,
+    xi: isize,
+    yi: isize,
+) -> Option<[u8; 4]> {
     if xi < 0 || yi < 0 || xi >= raster.width as isize || yi >= raster.height as isize {
         return None;
     }
@@ -553,7 +562,9 @@ fn render_tile_chunked(
                 0.0
             };
             let px = match resampling {
-                Resampling::Nearest => sample_nearest_multi(sources, selected, u, v, nodata, cache)?,
+                Resampling::Nearest => {
+                    sample_nearest_multi(sources, selected, u, v, nodata, cache)?
+                }
                 Resampling::Bilinear => {
                     sample_bilinear_multi(sources, selected, u, v, nodata, cache)?
                 }

@@ -523,12 +523,10 @@ pub(crate) fn load_sources_from_paths(
     let sources = paths
         .par_iter()
         .map(|path| -> Result<SourceDataset, String> {
-            let raster = load_raster(path.as_path()).map_err(|e| {
-                format!("failed to load raster '{}': {e}", path.display())
-            })?;
-            let georef = read_georef(path.as_path(), src_crs).map_err(|e| {
-                format!("failed to read georef '{}': {e}", path.display())
-            })?;
+            let raster = load_raster(path.as_path())
+                .map_err(|e| format!("failed to load raster '{}': {e}", path.display()))?;
+            let georef = read_georef(path.as_path(), src_crs)
+                .map_err(|e| format!("failed to read georef '{}': {e}", path.display()))?;
             Ok(SourceDataset { raster, georef })
         })
         .collect::<Result<Vec<_>, _>>()
