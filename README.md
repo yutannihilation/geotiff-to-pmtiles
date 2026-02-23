@@ -22,14 +22,34 @@ Pre-built binaries can be found at [Releases](https://github.com/yutannihilation
 
 ## Usages
 
-### Convert to PMTiles
+```
+Usage: geotiff-to-pmtiles [OPTIONS] <INPUT>...
+
+Arguments:
+  <INPUT>...  Input GeoTIFF path(s) and/or glob pattern(s) (e.g. data/*.tif data/a.tif)
+
+Options:
+  -o, --output <OUTPUT>          Output PMTiles path [default: out.pmtiles]
+      --src-crs <SRC_CRS>        Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326")
+      --nodeta <NODETA>          NoData value, e.g. "0" or "255,255,255"
+      --min-zoom <MIN_ZOOM>      Minimum zoom level. If omitted, it is auto-determined
+      --max-zoom <MAX_ZOOM>      Maximum zoom level. If omitted, defaults to min_zoom + 3
+      --resampling <RESAMPLING>  Resampling method [default: bilinear] [possible values: nearest, bilinear]
+      --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 128]
+  -h, --help                     Print help
+```
+
+### Examples
 
 ```sh
-# defaults: min zoom auto, max zoom = min + 3
-geotiff-to-pmtiles -o out.pmtiles /path/to/*.tif
+# specify output (default: out.pmtiles)
+geotiff-to-pmtiles -o /path/to/out.pmtiles /path/to/*.tif
+
+# specify zoom levels (defaults: min zoom auto, max zoom = min + 3)
+geotiff-to-pmtiles --min-zoom 14 --max-zoom 18 /path/to/*.tif
 
 # if CRS is missing, use --src-crs option
-geotiff-to-pmtiles --src-crs EPSG:6677 -o out.pmtiles /path/to/*.tif
+geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
 ```
 
 ## Notes
