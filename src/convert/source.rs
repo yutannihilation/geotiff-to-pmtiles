@@ -125,6 +125,8 @@ impl ChunkedTiffSampler {
         chunk_idx: u32,
         cache: &mut GlobalChunkCache,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Spatial locality hint: scanline/bilinear sampling usually touches these
+        // neighboring chunks immediately after the current one.
         let idx = chunk_idx as usize;
         let cx = idx % self.chunks_across;
         let cy = idx / self.chunks_across;

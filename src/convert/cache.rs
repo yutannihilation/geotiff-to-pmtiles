@@ -48,6 +48,7 @@ impl GlobalChunkCache {
     }
 
     pub(super) fn contains(&self, key: ChunkKey) -> bool {
+        // Presence check without LRU touch, useful for prefetch decisions.
         self.map.contains_key(&key)
     }
 

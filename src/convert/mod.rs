@@ -50,6 +50,8 @@ struct WorkerState {
 
 impl WorkerState {
     fn new(specs: &[SourceSpec], cache_bytes: usize) -> Self {
+        // Each worker owns its own decoders and cache to avoid lock contention
+        // during parallel render/encode.
         let mut sources = Vec::with_capacity(specs.len());
         for spec in specs {
             let reader =
@@ -228,6 +230,7 @@ pub fn convert(
     };
     println!("Chunk cache budget: {} MiB", cache_bytes / (1024 * 1024));
     let workers = rayon::current_num_threads().max(1);
+    // Split budget across workers so total memory stays close to `cache_mb`.
     let worker_cache_bytes = (cache_bytes / workers).max(1);
 
     for z in min_zoom..=max_zoom {
@@ -236,7 +239,8 @@ pub fn convert(
         let (x_max, y_max) = webmerc_to_tile(max_x_merc, min_y_merc, z);
 
         // Build tile list directly from the inclusive bbox range.
-        // We only need one ordering step: PMTiles tile id sort.
+        // This avoids the previous BTreeSet allocation + copy pass.
+        // We only keep one ordering step: PMTiles tile id sort.
         let tile_capacity = (x_max - x_min + 1) as usize * (y_max - y_min + 1) as usize;
         let mut tile_list = Vec::with_capacity(tile_capacity);
         for y in y_min..=y_max {
@@ -260,6 +264,7 @@ pub fn convert(
         std::thread::scope(|scope| {
             let tx = encoded_tx.clone();
             scope.spawn(move || {
+                // `map_init` gives each rayon worker its own mutable worker state.
                 tile_list
                     .par_iter()
                     .enumerate()

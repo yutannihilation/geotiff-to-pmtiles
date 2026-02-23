@@ -162,6 +162,8 @@ fn normalize_slice_to_u8<T, F>(
 where
     F: Fn(&T) -> f64 + Copy,
 {
+    // Two-pass normalization over the original typed slice. This avoids
+    // allocating a temporary `Vec<f64>` for large rasters.
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
     for v in values {

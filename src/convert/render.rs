@@ -56,6 +56,7 @@ pub(super) fn render_tile_chunked(
 }
 
 fn build_row_cursors(selected: &[(usize, [Pt; 4])], v: f64, denom: f64) -> Vec<RowSampleCursor> {
+    // Precompute per-row affine stepping so inner loops use only additions.
     let mut cursors = Vec::with_capacity(selected.len());
     for (source_idx, corners) in selected {
         let left = lerp(corners[0], corners[3], v);
@@ -74,6 +75,7 @@ fn build_row_cursors(selected: &[(usize, [Pt; 4])], v: f64, denom: f64) -> Vec<R
 }
 
 fn advance_cursors(cursors: &mut [RowSampleCursor]) {
+    // Hot-path update used once per output pixel.
     for c in cursors {
         c.x += c.dx;
         c.y += c.dy;
