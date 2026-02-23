@@ -12,8 +12,8 @@ use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    GeoTransform, Georef, Pt, SourceMetadata, parse_nodeta, source_corners_merc_meta,
-    tile_bounds_webmerc, tile_corners_in_source_raster_meta, webmerc_to_tile, zoom_for_tile_size,
+    Georef, Pt, SourceMetadata, parse_nodeta, source_corners_merc_georef, tile_bounds_webmerc,
+    tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
 use self::cache::GlobalChunkCache;
@@ -29,9 +29,7 @@ struct SourceSpec {
     path: std::path::PathBuf,
     width: usize,
     height: usize,
-    source_crs: String,
-    forward: GeoTransform,
-    raster_offset: f64,
+    georef: Georef,
 }
 
 impl SourceSpec {
@@ -40,22 +38,7 @@ impl SourceSpec {
             path: meta.path,
             width: meta.width,
             height: meta.height,
-            source_crs: meta.georef.source_crs,
-            forward: meta.georef.forward,
-            raster_offset: meta.georef.raster_offset,
-        }
-    }
-
-    fn as_meta(&self) -> SourceMetadata {
-        SourceMetadata {
-            path: self.path.clone(),
-            width: self.width,
-            height: self.height,
-            georef: Georef {
-                source_crs: self.source_crs.clone(),
-                forward: self.forward,
-                raster_offset: self.raster_offset,
-            },
+            georef: meta.georef,
         }
     }
 }
@@ -114,7 +97,7 @@ impl WorkerState {
             if !intersects {
                 continue;
             }
-            let corners = tile_corners_in_source_raster_meta(&spec.as_meta(), tile_merc_corners)?;
+            let corners = tile_corners_in_georef_raster(&spec.georef, tile_merc_corners)?;
             loaded_sources.push((source_idx, corners));
             active_sources[source_idx] = true;
         }
@@ -161,7 +144,7 @@ pub fn convert(
     for source in &source_specs {
         // Build per-source bbox in Web Mercator once so each tile can cheaply cull non-overlapping
         // datasets before attempting any raster sampling.
-        let corners = source_corners_merc_meta(&source.as_meta())?;
+        let corners = source_corners_merc_georef(&source.georef, source.width, source.height)?;
         let min_x = corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
         let max_x = corners
             .iter()

@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use crate::cli::Resampling;
 
 pub(crate) use georef::{
-    read_georef, source_corners_merc, source_corners_merc_meta, tile_corners_in_source_raster,
-    tile_corners_in_source_raster_meta,
+    read_georef, source_corners_merc, source_corners_merc_georef, tile_corners_in_georef_raster,
+    tile_corners_in_source_raster,
 };
 pub(crate) use inputs::{load_source_metadata, load_sources};
 pub(crate) use nodata::parse_nodeta;
