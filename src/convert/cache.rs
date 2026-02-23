@@ -47,6 +47,10 @@ impl GlobalChunkCache {
         self.map.get(&key).map(|node| &node.chunk)
     }
 
+    pub(super) fn contains(&self, key: ChunkKey) -> bool {
+        self.map.contains_key(&key)
+    }
+
     pub(super) fn insert(&mut self, key: ChunkKey, value: ChunkData) {
         let value_bytes = value.data.len();
         if self.map.contains_key(&key) {

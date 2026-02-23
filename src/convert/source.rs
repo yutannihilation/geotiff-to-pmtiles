@@ -27,6 +27,7 @@ pub(super) struct ChunkedTiffSampler {
     chunk_w: usize,
     chunk_h: usize,
     chunks_across: usize,
+    chunks_down: usize,
     chunk_count: usize,
 }
 
@@ -60,6 +61,7 @@ impl ChunkedTiffSampler {
             return Err("invalid chunk dimensions".into());
         }
         let chunks_across = width.div_ceil(chunk_w);
+        let chunks_down = height.div_ceil(chunk_h);
         let chunk_count = match decoder.get_chunk_type() {
             tiff::decoder::ChunkType::Strip => decoder.strip_count()? as usize,
             tiff::decoder::ChunkType::Tile => decoder.tile_count()? as usize,
@@ -74,6 +76,7 @@ impl ChunkedTiffSampler {
             chunk_w,
             chunk_h,
             chunks_across,
+            chunks_down,
             chunk_count,
         })
     }
@@ -114,6 +117,47 @@ impl ChunkedTiffSampler {
             stride,
             data,
         })
+    }
+
+    fn prefetch_neighbors(
+        &mut self,
+        source_idx: usize,
+        chunk_idx: u32,
+        cache: &mut GlobalChunkCache,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let idx = chunk_idx as usize;
+        let cx = idx % self.chunks_across;
+        let cy = idx / self.chunks_across;
+        if cy >= self.chunks_down {
+            return Ok(());
+        }
+
+        let mut candidates = Vec::with_capacity(3);
+        if cx + 1 < self.chunks_across {
+            candidates.push((cy * self.chunks_across + (cx + 1)) as u32);
+        }
+        if cy + 1 < self.chunks_down {
+            candidates.push((((cy + 1) * self.chunks_across) + cx) as u32);
+            if cx + 1 < self.chunks_across {
+                candidates.push((((cy + 1) * self.chunks_across) + (cx + 1)) as u32);
+            }
+        }
+
+        for neighbor_idx in candidates {
+            if neighbor_idx as usize >= self.chunk_count {
+                continue;
+            }
+            let neighbor_key = ChunkKey {
+                source_idx,
+                chunk_idx: neighbor_idx,
+            };
+            if cache.contains(neighbor_key) {
+                continue;
+            }
+            let chunk = self.read_chunk_data(neighbor_idx)?;
+            cache.insert(neighbor_key, chunk);
+        }
+        Ok(())
     }
 }
 
@@ -170,9 +214,11 @@ impl SourceSampler {
                     chunk_idx,
                 };
                 // Decode only when missing in cache; neighboring pixels tend to hit.
-                if cache.get(key).is_none() {
+                if !cache.contains(key) {
                     let chunk = s.read_chunk_data(chunk_idx)?;
                     cache.insert(key, chunk);
+                    // Warm likely next chunks (right, down, diagonal) to reduce read stalls.
+                    s.prefetch_neighbors(source_idx, chunk_idx, cache)?;
                 }
                 // Return RGBA from cached decoded chunk bytes.
                 Ok(cache
