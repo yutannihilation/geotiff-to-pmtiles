@@ -176,7 +176,7 @@ pub(crate) fn parse_nodeta(
 }
 
 pub fn resample_tiles(
-    input: &str,
+    input: &[String],
     src_crs: Option<&str>,
     nodeta: Option<&str>,
     resampling: Resampling,
@@ -219,7 +219,7 @@ pub fn resample_tiles(
         }
     }
 
-    println!("Input pattern: {input}");
+    println!("Input args: {}", input.join(" "));
     println!("Input files: {}", sources.len());
     println!("Selected zoom: {z}");
     println!("Output tiles: {}", tiles.len());
@@ -486,30 +486,52 @@ pub(crate) struct SourceMetadata {
     pub(crate) georef: Georef,
 }
 
-pub(crate) fn resolve_input_paths(input: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+fn has_glob_meta(arg: &str) -> bool {
+    arg.chars().any(|c| matches!(c, '*' | '?' | '[' | ']'))
+}
+
+pub(crate) fn resolve_input_paths(
+    input: &[String],
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut paths = Vec::new();
-    for entry in glob::glob(input)? {
-        match entry {
-            Ok(path) if path.is_file() => paths.push(path),
-            Ok(_) => {}
-            Err(err) => return Err(err.to_string().into()),
+    for arg in input {
+        let mut matched = 0usize;
+        for entry in glob::glob(arg)? {
+            match entry {
+                Ok(path) if path.is_file() => {
+                    matched += 1;
+                    paths.push(path);
+                }
+                Ok(_) => {}
+                Err(err) => return Err(err.to_string().into()),
+            }
+        }
+        if matched == 0 {
+            let p = PathBuf::from(arg);
+            if p.is_file() {
+                paths.push(p);
+                continue;
+            }
+            let kind = if has_glob_meta(arg) {
+                "glob pattern"
+            } else {
+                "input path"
+            };
+            return Err(format!("{kind} matched no files: {arg}").into());
         }
     }
+
     if paths.is_empty() {
-        let p = PathBuf::from(input);
-        if p.is_file() {
-            paths.push(p);
-        }
+        return Err("no input files matched".into());
     }
-    if paths.is_empty() {
-        return Err(format!("no input files matched: {input}").into());
-    }
+
     paths.sort();
+    paths.dedup();
     Ok(paths)
 }
 
 pub(crate) fn load_sources(
-    input: &str,
+    input: &[String],
     src_crs: Option<&str>,
 ) -> Result<Vec<SourceDataset>, Box<dyn std::error::Error>> {
     let paths = resolve_input_paths(input)?;
@@ -535,7 +557,7 @@ pub(crate) fn load_sources_from_paths(
 }
 
 pub(crate) fn load_source_metadata(
-    input: &str,
+    input: &[String],
     src_crs: Option<&str>,
 ) -> Result<Vec<SourceMetadata>, Box<dyn std::error::Error>> {
     let paths = resolve_input_paths(input)?;

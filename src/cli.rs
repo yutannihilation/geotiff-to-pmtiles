@@ -25,8 +25,9 @@ pub enum Commands {
     },
     /// Resample each covering tile to a 512x512 AVIF image for debugging.
     ResampleTiles {
-        /// Input GeoTIFF path or glob pattern (e.g. "data/*.tif").
-        input: String,
+        /// Input GeoTIFF path(s) and/or glob pattern(s) (e.g. data/*.tif data/a.tif).
+        #[arg(required = true, num_args = 1..)]
+        input: Vec<String>,
         /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
         #[arg(long)]
         src_crs: Option<String>,
@@ -39,8 +40,9 @@ pub enum Commands {
     },
     /// Convert GeoTIFF to PMTiles with AVIF image tiles.
     Convert {
-        /// Input GeoTIFF path or glob pattern (e.g. "data/*.tif").
-        input: String,
+        /// Input GeoTIFF path(s) and/or glob pattern(s) (e.g. data/*.tif data/a.tif).
+        #[arg(required = true, num_args = 1..)]
+        input: Vec<String>,
         /// Output PMTiles path (positional; default: out.pmtiles).
         #[arg(default_value = "out.pmtiles")]
         output: std::path::PathBuf,

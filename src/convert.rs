@@ -320,7 +320,7 @@ fn sample_pixel_raster_opt(
 }
 
 pub fn convert(
-    input: &str,
+    input: &[String],
     output: &std::path::Path,
     src_crs: Option<&str>,
     nodeta: Option<&str>,
@@ -334,7 +334,7 @@ pub fn convert(
     // 1) load only metadata up front
     // 2) decode TIFF chunks lazily during sampling
     // 3) keep a global byte-bounded LRU cache of decoded chunks
-    println!("Input pattern: {input}; loading metadata...");
+    println!("Input args: {}; loading metadata...", input.join(" "));
     let sources_meta = load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
     let mut sources = Vec::with_capacity(sources_meta.len());
@@ -441,7 +441,7 @@ pub fn convert(
         .center(center_lon, center_lat)
         .create(file)?;
 
-    println!("Input pattern: {input}");
+    println!("Input args: {}", input.join(" "));
     println!("Input files: {}", sources.len());
     println!("Output: {}", output.display());
     println!("Zoom range: {min_zoom}..{max_zoom}");

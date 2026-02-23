@@ -23,7 +23,7 @@ fn main() -> ExitCode {
             nodeta,
             resampling,
         } => resample::resample_tiles(
-            input.as_str(),
+            &input,
             src_crs.as_deref(),
             nodeta.as_deref(),
             resampling,
@@ -38,7 +38,7 @@ fn main() -> ExitCode {
             resampling,
             cache_mb,
         } => convert::convert(
-            input.as_str(),
+            &input,
             &output,
             src_crs.as_deref(),
             nodeta.as_deref(),
