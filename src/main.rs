@@ -13,12 +13,14 @@ fn main() -> ExitCode {
     let result = convert::convert(
         &cli.input,
         &cli.output,
-        cli.src_crs.as_deref(),
-        cli.nodeta.as_deref(),
-        cli.min_zoom,
-        cli.max_zoom,
-        cli.resampling,
-        cli.cache_mb,
+        convert::ConvertOptions {
+            src_crs: cli.src_crs.as_deref(),
+            nodeta: cli.nodeta.as_deref(),
+            min_zoom: cli.min_zoom,
+            max_zoom: cli.max_zoom,
+            resampling: cli.resampling,
+            cache_mb: cli.cache_mb,
+        },
     );
 
     match result {

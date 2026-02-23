@@ -10,7 +10,7 @@ use crate::resample::decoding_result_to_u8;
 use super::cache::{ChunkData, ChunkKey, GlobalChunkCache};
 
 pub(super) enum SourceReader {
-    Chunked(ChunkedTiffSampler),
+    Chunked(Box<ChunkedTiffSampler>),
     FullDeferred(Option<crate::resample::Raster>),
 }
 

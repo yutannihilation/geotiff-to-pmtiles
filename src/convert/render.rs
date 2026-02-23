@@ -5,6 +5,8 @@ use super::TILE_SIZE;
 use super::cache::GlobalChunkCache;
 use super::source::SourceSampler;
 
+type NearestSample = ([u8; 4], f64);
+
 #[derive(Clone, Copy)]
 struct RowSampleCursor {
     source_idx: usize,
@@ -89,7 +91,7 @@ fn sample_nearest_multi(
     cache: &mut GlobalChunkCache,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // Nearest policy across sources: choose globally nearest valid sample in raster pixel space.
-    let mut best: Option<([u8; 4], f64)> = None;
+    let mut best: Option<NearestSample> = None;
     for c in cursors {
         if let Some((px, dist2)) =
             sample_nearest_with_dist(samplers, c.source_idx, c.x, c.y, nodata, cache)?
@@ -125,7 +127,7 @@ fn sample_nearest_with_dist(
     y: f64,
     nodata: Option<NoDataSpec>,
     cache: &mut GlobalChunkCache,
-) -> Result<Option<([u8; 4], f64)>, Box<dyn std::error::Error>> {
+) -> Result<Option<NearestSample>, Box<dyn std::error::Error>> {
     let x0 = x.floor() as isize;
     let y0 = y.floor() as isize;
     let mut candidates = [(x0, y0), (x0 + 1, y0), (x0, y0 + 1), (x0 + 1, y0 + 1)];
@@ -139,10 +141,10 @@ fn sample_nearest_with_dist(
         let Some(px) = samplers[source_idx].sample_pixel_opt(source_idx, xi, yi, cache)? else {
             continue;
         };
-        if let Some(nd) = nodata {
-            if nd.is_nodata(px) {
-                continue;
-            }
+        if let Some(nd) = nodata
+            && nd.is_nodata(px)
+        {
+            continue;
         }
         let dist2 = (xi as f64 - x).powi(2) + (yi as f64 - y).powi(2);
         return Ok(Some((px, dist2)));
@@ -191,10 +193,10 @@ fn sample_bilinear_opt(
         let Some(px) = px else {
             continue;
         };
-        if let Some(nd) = nodata {
-            if nd.is_nodata(px) {
-                continue;
-            }
+        if let Some(nd) = nodata
+            && nd.is_nodata(px)
+        {
+            continue;
         }
         wsum += w;
         for c in 0..4 {

@@ -9,16 +9,16 @@ use super::Raster;
 
 pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std::error::Error>> {
     // Prefer `image` crate decoding for proper RGB/RGBA output when TIFF has multiple bands.
-    if let Ok(reader) = ImageReader::open(path) {
-        if let Ok(dynamic) = reader.decode() {
-            let rgba = dynamic.to_rgba8();
-            return Ok(Raster {
-                width: rgba.width() as usize,
-                height: rgba.height() as usize,
-                stride: 4,
-                data: rgba.into_raw(),
-            });
-        }
+    if let Ok(reader) = ImageReader::open(path)
+        && let Ok(dynamic) = reader.decode()
+    {
+        let rgba = dynamic.to_rgba8();
+        return Ok(Raster {
+            width: rgba.width() as usize,
+            height: rgba.height() as usize,
+            stride: 4,
+            data: rgba.into_raw(),
+        });
     }
 
     // Fallback: decode via `tiff` crate for cases `image` cannot decode.

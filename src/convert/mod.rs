@@ -25,6 +25,15 @@ const TILE_SIZE: usize = 512;
 // This caps memory growth when many TIFF files are involved.
 const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
+pub struct ConvertOptions<'a> {
+    pub src_crs: Option<&'a str>,
+    pub nodeta: Option<&'a str>,
+    pub min_zoom: Option<u8>,
+    pub max_zoom: Option<u8>,
+    pub resampling: Resampling,
+    pub cache_mb: usize,
+}
+
 struct SourceSpec {
     path: std::path::PathBuf,
     width: usize,
@@ -56,7 +65,7 @@ impl WorkerState {
         for spec in specs {
             let reader =
                 match ChunkedTiffSampler::open(spec.path.as_path(), spec.width, spec.height) {
-                    Ok(sampler) => SourceReader::Chunked(sampler),
+                    Ok(sampler) => SourceReader::Chunked(Box::new(sampler)),
                     Err(_) => SourceReader::FullDeferred(None),
                 };
             sources.push(SourceSampler {
@@ -72,14 +81,13 @@ impl WorkerState {
 
     fn render_and_encode_tile(
         &mut self,
-        z: u8,
-        x: u32,
-        y: u32,
+        tile: (u8, u32, u32),
         source_specs: &[SourceSpec],
         source_bounds: &[(f64, f64, f64, f64)],
         resampling: Resampling,
         nodata: Option<crate::resample::NoDataSpec>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let (z, x, y) = tile;
         let bounds = tile_bounds_webmerc(z, x, y);
         let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
         let tile_min_x = bounds.ul.x.min(bounds.lr.x);
@@ -121,13 +129,16 @@ impl WorkerState {
 pub fn convert(
     input: &[String],
     output: &std::path::Path,
-    src_crs: Option<&str>,
-    nodeta: Option<&str>,
-    min_zoom_opt: Option<u8>,
-    max_zoom_opt: Option<u8>,
-    resampling: Resampling,
-    cache_mb: usize,
+    options: ConvertOptions<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let ConvertOptions {
+        src_crs,
+        nodeta,
+        min_zoom: min_zoom_opt,
+        max_zoom: max_zoom_opt,
+        resampling,
+        cache_mb,
+    } = options;
     let nodata = parse_nodeta(nodeta)?;
     // Memory-first strategy:
     // 1) load only metadata up front
@@ -297,9 +308,7 @@ pub fn convert(
                         |worker, (idx, (_tile_id, x, y))| {
                             let encoded = worker
                                 .render_and_encode_tile(
-                                    z,
-                                    *x,
-                                    *y,
+                                    (z, *x, *y),
                                     source_specs_ref,
                                     source_bounds_ref,
                                     resampling,
