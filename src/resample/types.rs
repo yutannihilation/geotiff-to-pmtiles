@@ -129,11 +129,6 @@ pub(crate) struct Georef {
     pub(crate) raster_offset: f64,
 }
 
-pub(crate) struct SourceDataset {
-    pub(crate) raster: Raster,
-    pub(crate) georef: Georef,
-}
-
 pub(crate) struct SourceMetadata {
     pub(crate) path: PathBuf,
     pub(crate) width: usize,

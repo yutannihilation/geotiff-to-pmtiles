@@ -6,7 +6,7 @@
 A simple CLI for converting GeoTIFF files to PMTiles.
 
 ```sh
-geotiff-to-pmtiles convert /path/to/*.tif
+geotiff-to-pmtiles /path/to/*.tif
 ```
 
 Compared to the existing solutions:
@@ -26,30 +26,17 @@ Pre-built binaries can be found at [Releases](https://github.com/yutannihilation
 
 ```sh
 # defaults: min zoom auto, max zoom = min + 3
-geotiff-to-pmtiles convert -o out.pmtiles /path/to/*.tif
+geotiff-to-pmtiles -o out.pmtiles /path/to/*.tif
 
 # if CRS is missing, use --src-crs option
-geotiff-to-pmtiles convert --src-crs EPSG:6677 -o out.pmtiles /path/to/*.tif
-```
-
-### Debug commands
-
-```sh
-# Header dump
-geotiff-to-pmtiles dump-header /path/to/sample.tif
-
-# Find 1-4 covering tiles at an auto-selected zoom
-geotiff-to-pmtiles cover-tile /path/to/sample.tif --src-crs EPSG:6677
-
-# Debug render covering tiles as out1.avif, out2.avif, ...
-geotiff-to-pmtiles resample-tiles /path/to/*.tif --src-crs EPSG:6677 --resampling bilinear
+geotiff-to-pmtiles --src-crs EPSG:6677 -o out.pmtiles /path/to/*.tif
 ```
 
 ## Notes
 
-- `convert` and `resample-tiles` accept one or more input arguments.
+- Accepts one or more input arguments.
 - Each input argument can be either a file path or a glob pattern (for example `/path/to/*.tif`).
-- `convert` output path is specified with `--output` (`-o`) and defaults to `out.pmtiles`.
+- Output path is specified with `--output` (`-o`) and defaults to `out.pmtiles`.
 - To force in-app glob expansion consistently across shells, quote glob patterns.
 - If GeoTIFF georeferencing tags are missing, the tool falls back to adjacent world files (`.tfw`, `.TFW`, `.tifw`, `.TIFW`) when available.
 - `--src-crs` is required when CRS metadata is missing.

@@ -5,13 +5,7 @@ use proj_lite::Proj;
 use tiff::decoder::Decoder;
 use tiff::tags::Tag;
 
-use super::{GeoTransform, Georef, Pt, SourceDataset};
-
-pub(crate) fn source_corners_merc(
-    source: &SourceDataset,
-) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
-    source_corners_merc_from_dims(&source.georef, source.raster.width, source.raster.height)
-}
+use super::{GeoTransform, Georef, Pt};
 
 pub(crate) fn source_corners_merc_georef(
     georef: &Georef,
@@ -54,13 +48,6 @@ fn source_corners_merc_from_dims(
         out[i] = Pt { x, y };
     }
     Ok(out)
-}
-
-pub(crate) fn tile_corners_in_source_raster(
-    source: &SourceDataset,
-    tile_corners_merc: [Pt; 4],
-) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
-    tile_corners_in_georef_raster(&source.georef, tile_corners_merc)
 }
 
 pub(crate) fn tile_corners_in_georef_raster(
