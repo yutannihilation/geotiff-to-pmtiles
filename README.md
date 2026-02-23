@@ -19,10 +19,10 @@ Pre-built binaries can be found at [Releases](https://github.com/yutannihilation
 
 ```sh
 # defaults: min zoom auto, max zoom = min + 3
-geotiff-to-pmtiles convert ./data/*.tif out.pmtiles
+geotiff-to-pmtiles convert -o out.pmtiles ./data/*.tif
 
 # if CRS is missing, use --src-crs option
-geotiff-to-pmtiles convert --src-crs EPSG:6677 ./data/*.tif out.pmtiles
+geotiff-to-pmtiles convert --src-crs EPSG:6677 -o out.pmtiles ./data/*.tif
 ```
 
 ### Debug commands
@@ -42,6 +42,7 @@ geotiff-to-pmtiles resample-tiles ./data/*.tif --src-crs EPSG:6677 --resampling 
 
 - `convert` and `resample-tiles` accept one or more input arguments.
 - Each input argument can be either a file path or a glob pattern (for example `/path/data/*.tif`).
+- `convert` output path is specified with `--output` (`-o`) and defaults to `out.pmtiles`.
 - To force in-app glob expansion consistently across shells, quote glob patterns.
 - If GeoTIFF georeferencing tags are missing, the tool falls back to adjacent world files (`.tfw`, `.TFW`, `.tifw`, `.TIFW`) when available.
 - `--src-crs` is required when CRS metadata is missing.
