@@ -59,6 +59,9 @@ pub enum Commands {
         /// Resampling method.
         #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
         resampling: Resampling,
+        /// Global chunk cache size in MiB for TIFF partial reads.
+        #[arg(long, default_value_t = 128)]
+        cache_mb: usize,
     },
 }
 

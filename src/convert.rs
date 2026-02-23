@@ -17,7 +17,9 @@ use crate::resample::{
 };
 
 const TILE_SIZE: usize = 512;
-const CHUNK_CACHE_CAPACITY: usize = 64;
+// Global cache budget shared across all input sources/chunks.
+// This caps memory growth when many TIFF files are involved.
+const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 struct ChunkData {
     width: usize,
@@ -26,42 +28,59 @@ struct ChunkData {
     data: Vec<u8>,
 }
 
-struct ChunkLru {
-    capacity: usize,
-    order: VecDeque<u32>,
-    map: HashMap<u32, ChunkData>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChunkKey {
+    source_idx: usize,
+    chunk_idx: u32,
 }
 
-impl ChunkLru {
-    fn new(capacity: usize) -> Self {
+struct GlobalChunkCache {
+    max_bytes: usize,
+    used_bytes: usize,
+    order: VecDeque<ChunkKey>,
+    map: HashMap<ChunkKey, ChunkData>,
+}
+
+impl GlobalChunkCache {
+    fn new(max_bytes: usize) -> Self {
         Self {
-            capacity,
+            max_bytes,
+            used_bytes: 0,
             order: VecDeque::new(),
             map: HashMap::new(),
         }
     }
 
-    fn get(&mut self, key: u32) -> Option<&ChunkData> {
+    fn get(&mut self, key: ChunkKey) -> Option<&ChunkData> {
         if self.map.contains_key(&key) {
             self.touch(key);
         }
         self.map.get(&key)
     }
 
-    fn insert(&mut self, key: u32, value: ChunkData) {
+    fn insert(&mut self, key: ChunkKey, value: ChunkData) {
+        let value_bytes = value.data.len();
         if self.map.contains_key(&key) {
             self.order.retain(|k| *k != key);
-        }
-        self.map.insert(key, value);
-        self.order.push_back(key);
-        while self.map.len() > self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
+            if let Some(old) = self.map.remove(&key) {
+                self.used_bytes = self.used_bytes.saturating_sub(old.data.len());
             }
         }
+        // LRU eviction by total bytes, not item count.
+        while self.used_bytes + value_bytes > self.max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(old) = self.map.remove(&oldest) {
+                self.used_bytes = self.used_bytes.saturating_sub(old.data.len());
+            }
+        }
+        self.used_bytes += value_bytes;
+        self.map.insert(key, value);
+        self.order.push_back(key);
     }
 
-    fn touch(&mut self, key: u32) {
+    fn touch(&mut self, key: ChunkKey) {
         self.order.retain(|k| *k != key);
         self.order.push_back(key);
     }
@@ -69,7 +88,7 @@ impl ChunkLru {
 
 enum SourceReader {
     Chunked(ChunkedTiffSampler),
-    Full(crate::resample::Raster),
+    FullDeferred(Option<crate::resample::Raster>),
 }
 
 struct SourceSampler {
@@ -89,7 +108,6 @@ struct ChunkedTiffSampler {
     chunk_h: usize,
     chunks_across: usize,
     chunk_count: usize,
-    cache: ChunkLru,
 }
 
 impl ChunkedTiffSampler {
@@ -132,65 +150,55 @@ impl ChunkedTiffSampler {
             chunk_h,
             chunks_across,
             chunk_count,
-            cache: ChunkLru::new(CHUNK_CACHE_CAPACITY),
         })
     }
 
-    fn sample_pixel_opt(
-        &mut self,
+    fn chunk_and_local(
+        &self,
         xi: isize,
         yi: isize,
-    ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
+    ) -> Option<(u32, usize, usize)> {
+        // Map absolute pixel coordinate -> (chunk index, local x/y in chunk).
         if xi < 0 || yi < 0 || xi >= self.width as isize || yi >= self.height as isize {
-            return Ok(None);
+            return None;
         }
         let xi = xi as usize;
         let yi = yi as usize;
-
         let cx = xi / self.chunk_w;
         let cy = yi / self.chunk_h;
         let chunk_idx = (cy * self.chunks_across + cx) as u32;
         if chunk_idx as usize >= self.chunk_count {
-            return Ok(None);
+            return None;
         }
-
-        if self.cache.get(chunk_idx).is_none() {
-            let (cw_u32, ch_u32) = self.decoder.chunk_data_dimensions(chunk_idx);
-            let chunk = self.decoder.read_chunk(chunk_idx)?;
-            let data = decoding_result_to_u8(chunk);
-            let cw = cw_u32 as usize;
-            let ch = ch_u32 as usize;
-            let stride = if cw == 0 || ch == 0 {
-                self.samples.max(1)
-            } else {
-                (data.len() / (cw * ch)).max(1)
-            };
-            self.cache.insert(
-                chunk_idx,
-                ChunkData {
-                    width: cw,
-                    height: ch,
-                    stride,
-                    data,
-                },
-            );
-        }
-
-        let Some(chunk) = self.cache.get(chunk_idx) else {
-            return Ok(None);
-        };
         let x0 = cx * self.chunk_w;
         let y0 = cy * self.chunk_h;
-        let lx = xi.saturating_sub(x0);
-        let ly = yi.saturating_sub(y0);
-        if lx >= chunk.width || ly >= chunk.height {
-            return Ok(None);
-        }
-        Ok(pixel_from_chunk(chunk, lx, ly))
+        Some((chunk_idx, xi.saturating_sub(x0), yi.saturating_sub(y0)))
+    }
+
+    fn read_chunk_data(&mut self, chunk_idx: u32) -> Result<ChunkData, Box<dyn std::error::Error>> {
+        let (cw_u32, ch_u32) = self.decoder.chunk_data_dimensions(chunk_idx);
+        let chunk = self.decoder.read_chunk(chunk_idx)?;
+        let data = decoding_result_to_u8(chunk);
+        let cw = cw_u32 as usize;
+        let ch = ch_u32 as usize;
+        let stride = if cw == 0 || ch == 0 {
+            self.samples.max(1)
+        } else {
+            (data.len() / (cw * ch)).max(1)
+        };
+        Ok(ChunkData {
+            width: cw,
+            height: ch,
+            stride,
+            data,
+        })
     }
 }
 
 fn pixel_from_chunk(chunk: &ChunkData, lx: usize, ly: usize) -> Option<[u8; 4]> {
+    if lx >= chunk.width || ly >= chunk.height {
+        return None;
+    }
     let pixel_index = ly * chunk.width + lx;
     let base = pixel_index.saturating_mul(chunk.stride);
     if base >= chunk.data.len() {
@@ -225,12 +233,42 @@ fn pixel_from_chunk(chunk: &ChunkData, lx: usize, ly: usize) -> Option<[u8; 4]> 
 impl SourceSampler {
     fn sample_pixel_opt(
         &mut self,
+        source_idx: usize,
         xi: isize,
         yi: isize,
+        cache: &mut GlobalChunkCache,
     ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
         match &mut self.reader {
-            SourceReader::Chunked(s) => s.sample_pixel_opt(xi, yi),
-            SourceReader::Full(raster) => Ok(sample_pixel_raster_opt(raster, xi, yi)),
+            SourceReader::Chunked(s) => {
+                let Some((chunk_idx, lx, ly)) = s.chunk_and_local(xi, yi) else {
+                    return Ok(None);
+                };
+                let key = ChunkKey { source_idx, chunk_idx };
+                // Decode only when missing in cache; neighboring pixels tend to hit.
+                if cache.get(key).is_none() {
+                    let chunk = s.read_chunk_data(chunk_idx)?;
+                    cache.insert(key, chunk);
+                }
+                Ok(cache.get(key).and_then(|chunk| pixel_from_chunk(chunk, lx, ly)))
+            }
+            SourceReader::FullDeferred(raster_opt) => {
+                if raster_opt.is_none() {
+                    *raster_opt = Some(crate::resample::load_raster(self.path.as_path())?);
+                }
+                Ok(raster_opt
+                    .as_ref()
+                    .and_then(|raster| sample_pixel_raster_opt(raster, xi, yi)))
+            }
+        }
+    }
+
+    fn release_if_inactive(&mut self, active: bool) {
+        if active {
+            return;
+        }
+        match &mut self.reader {
+            SourceReader::Chunked(_) => {}
+            SourceReader::FullDeferred(r) => *r = None,
         }
     }
 }
@@ -280,8 +318,13 @@ pub fn convert(
     min_zoom_opt: Option<u8>,
     max_zoom_opt: Option<u8>,
     resampling: Resampling,
+    cache_mb: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let nodata = parse_nodeta(nodeta)?;
+    // Memory-first strategy:
+    // 1) load only metadata up front
+    // 2) decode TIFF chunks lazily during sampling
+    // 3) keep a global byte-bounded LRU cache of decoded chunks
     println!("Input pattern: {input}; loading metadata...");
     let sources_meta = load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
@@ -291,7 +334,7 @@ pub fn convert(
             Ok(sampler) => SourceReader::Chunked(sampler),
             Err(_) => {
                 // Fallback path for unsupported layouts (e.g. planar TIFF).
-                SourceReader::Full(crate::resample::load_raster(src.path.as_path())?)
+                SourceReader::FullDeferred(None)
             }
         };
         sources.push(SourceSampler {
@@ -393,6 +436,13 @@ pub fn convert(
     println!("Input files: {}", sources.len());
     println!("Output: {}", output.display());
     println!("Zoom range: {min_zoom}..{max_zoom}");
+    let cache_bytes = if cache_mb == 0 {
+        DEFAULT_GLOBAL_CHUNK_CACHE_BYTES
+    } else {
+        cache_mb.saturating_mul(1024 * 1024)
+    };
+    println!("Chunk cache budget: {} MiB", cache_bytes / (1024 * 1024));
+    let mut global_cache = GlobalChunkCache::new(cache_bytes);
 
     for z in min_zoom..=max_zoom {
         // Cover the full extent by taking the inclusive tile range from bbox corners.
@@ -426,6 +476,7 @@ pub fn convert(
             let tile_max_y = bounds.ul.y.max(bounds.lr.y);
 
             let mut loaded_sources = Vec::new();
+            let mut active_sources = vec![false; sources.len()];
             for (source_idx, (_source, (smin_x, smin_y, smax_x, smax_y))) in
                 sources.iter().zip(source_bounds.iter()).enumerate()
             {
@@ -448,12 +499,23 @@ pub fn convert(
                 };
                 let corners = tile_corners_in_source_raster_meta(&meta, tile_merc_corners)?;
                 loaded_sources.push((source_idx, corners));
+                active_sources[source_idx] = true;
             }
 
-            let rgba = render_tile_chunked(&mut sources, &loaded_sources, resampling, nodata)?;
+            let rgba = render_tile_chunked(
+                &mut sources,
+                &loaded_sources,
+                resampling,
+                nodata,
+                &mut global_cache,
+            )?;
             let avif = encode_avif(&rgba)?;
             let coord = TileCoord::new(z, x, y)?;
             writer.add_raw_tile(coord, &avif)?;
+
+            for (i, source) in sources.iter_mut().enumerate() {
+                source.release_if_inactive(active_sources[i]);
+            }
 
             let done = idx + 1;
             let percent = (done * 100) / total_tiles.max(1);
@@ -475,6 +537,7 @@ fn render_tile_chunked(
     selected: &[(usize, [Pt; 4])],
     resampling: Resampling,
     nodata: Option<NoDataSpec>,
+    cache: &mut GlobalChunkCache,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut out = vec![0_u8; TILE_SIZE * TILE_SIZE * 4];
     for j in 0..TILE_SIZE {
@@ -490,8 +553,10 @@ fn render_tile_chunked(
                 0.0
             };
             let px = match resampling {
-                Resampling::Nearest => sample_nearest_multi(sources, selected, u, v, nodata)?,
-                Resampling::Bilinear => sample_bilinear_multi(sources, selected, u, v, nodata)?,
+                Resampling::Nearest => sample_nearest_multi(sources, selected, u, v, nodata, cache)?,
+                Resampling::Bilinear => {
+                    sample_bilinear_multi(sources, selected, u, v, nodata, cache)?
+                }
             };
             let base = (j * TILE_SIZE + i) * 4;
             out[base] = px[0];
@@ -509,13 +574,16 @@ fn sample_nearest_multi(
     u: f64,
     v: f64,
     nodata: Option<NoDataSpec>,
+    cache: &mut GlobalChunkCache,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     let mut best: Option<([u8; 4], f64)> = None;
     for (idx, corners) in selected {
         let left = lerp(corners[0], corners[3], v);
         let right = lerp(corners[1], corners[2], v);
         let p = lerp(left, right, u);
-        if let Some((px, dist2)) = sample_nearest_with_dist(samplers, *idx, p.x, p.y, nodata)? {
+        if let Some((px, dist2)) =
+            sample_nearest_with_dist(samplers, *idx, p.x, p.y, nodata, cache)?
+        {
             match best {
                 Some((_, d)) if d <= dist2 => {}
                 _ => best = Some((px, dist2)),
@@ -531,12 +599,13 @@ fn sample_bilinear_multi(
     u: f64,
     v: f64,
     nodata: Option<NoDataSpec>,
+    cache: &mut GlobalChunkCache,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     for (idx, corners) in selected {
         let left = lerp(corners[0], corners[3], v);
         let right = lerp(corners[1], corners[2], v);
         let p = lerp(left, right, u);
-        if let Some(px) = sample_bilinear_opt(samplers, *idx, p.x, p.y, nodata)? {
+        if let Some(px) = sample_bilinear_opt(samplers, *idx, p.x, p.y, nodata, cache)? {
             return Ok(px);
         }
     }
@@ -549,6 +618,7 @@ fn sample_nearest_with_dist(
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
+    cache: &mut GlobalChunkCache,
 ) -> Result<Option<([u8; 4], f64)>, Box<dyn std::error::Error>> {
     let x0 = x.floor() as isize;
     let y0 = y.floor() as isize;
@@ -560,7 +630,7 @@ fn sample_nearest_with_dist(
     });
 
     for (xi, yi) in candidates {
-        let Some(px) = samplers[source_idx].sample_pixel_opt(xi, yi)? else {
+        let Some(px) = samplers[source_idx].sample_pixel_opt(source_idx, xi, yi, cache)? else {
             continue;
         };
         if let Some(nd) = nodata {
@@ -580,6 +650,7 @@ fn sample_bilinear_opt(
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
+    cache: &mut GlobalChunkCache,
 ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
     let x0 = x.floor();
     let y0 = y.floor();
@@ -590,19 +661,19 @@ fn sample_bilinear_opt(
 
     let samples = [
         (
-            samplers[source_idx].sample_pixel_opt(x0 as isize, y0 as isize)?,
+            samplers[source_idx].sample_pixel_opt(source_idx, x0 as isize, y0 as isize, cache)?,
             (1.0 - tx) * (1.0 - ty),
         ),
         (
-            samplers[source_idx].sample_pixel_opt(x1 as isize, y0 as isize)?,
+            samplers[source_idx].sample_pixel_opt(source_idx, x1 as isize, y0 as isize, cache)?,
             tx * (1.0 - ty),
         ),
         (
-            samplers[source_idx].sample_pixel_opt(x0 as isize, y1 as isize)?,
+            samplers[source_idx].sample_pixel_opt(source_idx, x0 as isize, y1 as isize, cache)?,
             (1.0 - tx) * ty,
         ),
         (
-            samplers[source_idx].sample_pixel_opt(x1 as isize, y1 as isize)?,
+            samplers[source_idx].sample_pixel_opt(source_idx, x1 as isize, y1 as isize, cache)?,
             tx * ty,
         ),
     ];

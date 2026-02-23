@@ -36,6 +36,7 @@ fn main() -> ExitCode {
             min_zoom,
             max_zoom,
             resampling,
+            cache_mb,
         } => convert::convert(
             input.as_str(),
             &output,
@@ -44,6 +45,7 @@ fn main() -> ExitCode {
             min_zoom,
             max_zoom,
             resampling,
+            cache_mb,
         ),
     };
 
