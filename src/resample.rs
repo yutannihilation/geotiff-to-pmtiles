@@ -846,7 +846,7 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
     })
 }
 
-fn decoding_result_to_u8(image: DecodingResult) -> Vec<u8> {
+pub(crate) fn decoding_result_to_u8(image: DecodingResult) -> Vec<u8> {
     match image {
         DecodingResult::U8(v) => v,
         DecodingResult::U16(v) => normalize_to_u8(
