@@ -1,6 +1,13 @@
 # geotiff-to-pmtiles
 
-Small Rust CLI to inspect GeoTIFF headers, estimate covering XYZ tiles, debug resampling, and convert GeoTIFF inputs into PMTiles with AVIF tiles.
+A simple CLI for converting GeoTIFF files to PMTiles.
+
+Compared to the existing solutions:
+
+- Single statically linked binary with no external runtime dependencies.
+- Supports multiple input files via a glob pattern (for example, `/path/data/*.tif`), so no pre-merge step with `gdal merge` is needed.
+- Memory efficient by design (with the tradeoff of more repeated disk reads).
+- Outputs AVIF tiles.
 
 ## Installation
 
