@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tiff::decoder::Decoder;
 use tiff::tags::Tag;
 
-use crate::resample::{Georef, decoding_result_to_u8};
+use crate::resample::decoding_result_to_u8;
 
 use super::cache::{ChunkData, ChunkKey, GlobalChunkCache};
 
@@ -16,9 +16,6 @@ pub(super) enum SourceReader {
 
 pub(super) struct SourceSampler {
     pub(super) path: PathBuf,
-    pub(super) georef: Georef,
-    pub(super) width: usize,
-    pub(super) height: usize,
     pub(super) reader: SourceReader,
 }
 

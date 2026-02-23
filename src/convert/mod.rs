@@ -8,11 +8,12 @@ use std::sync::mpsc;
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
+use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Georef, parse_nodeta, source_corners_merc_meta, tile_bounds_webmerc,
-    tile_corners_in_source_raster_meta, webmerc_to_tile, zoom_for_tile_size,
+    GeoTransform, Georef, Pt, SourceMetadata, parse_nodeta, source_corners_merc_meta,
+    tile_bounds_webmerc, tile_corners_in_source_raster_meta, webmerc_to_tile, zoom_for_tile_size,
 };
 
 use self::cache::GlobalChunkCache;
@@ -23,6 +24,114 @@ const TILE_SIZE: usize = 512;
 // Global cache budget shared across all input sources/chunks.
 // This caps memory growth when many TIFF files are involved.
 const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
+
+struct SourceSpec {
+    path: std::path::PathBuf,
+    width: usize,
+    height: usize,
+    source_crs: String,
+    forward: GeoTransform,
+    raster_offset: f64,
+}
+
+impl SourceSpec {
+    fn from_meta(meta: SourceMetadata) -> Self {
+        Self {
+            path: meta.path,
+            width: meta.width,
+            height: meta.height,
+            source_crs: meta.georef.source_crs,
+            forward: meta.georef.forward,
+            raster_offset: meta.georef.raster_offset,
+        }
+    }
+
+    fn as_meta(&self) -> SourceMetadata {
+        SourceMetadata {
+            path: self.path.clone(),
+            width: self.width,
+            height: self.height,
+            georef: Georef {
+                source_crs: self.source_crs.clone(),
+                forward: self.forward,
+                raster_offset: self.raster_offset,
+            },
+        }
+    }
+}
+
+struct WorkerState {
+    sources: Vec<SourceSampler>,
+    cache: GlobalChunkCache,
+}
+
+impl WorkerState {
+    fn new(specs: &[SourceSpec], cache_bytes: usize) -> Self {
+        let mut sources = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let reader =
+                match ChunkedTiffSampler::open(spec.path.as_path(), spec.width, spec.height) {
+                    Ok(sampler) => SourceReader::Chunked(sampler),
+                    Err(_) => SourceReader::FullDeferred(None),
+                };
+            sources.push(SourceSampler {
+                path: spec.path.clone(),
+                reader,
+            });
+        }
+        Self {
+            sources,
+            cache: GlobalChunkCache::new(cache_bytes),
+        }
+    }
+
+    fn render_and_encode_tile(
+        &mut self,
+        z: u8,
+        x: u32,
+        y: u32,
+        source_specs: &[SourceSpec],
+        source_bounds: &[(f64, f64, f64, f64)],
+        resampling: Resampling,
+        nodata: Option<crate::resample::NoDataSpec>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let bounds = tile_bounds_webmerc(z, x, y);
+        let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
+        let tile_min_x = bounds.ul.x.min(bounds.lr.x);
+        let tile_max_x = bounds.ul.x.max(bounds.lr.x);
+        let tile_min_y = bounds.ul.y.min(bounds.lr.y);
+        let tile_max_y = bounds.ul.y.max(bounds.lr.y);
+
+        let mut loaded_sources: Vec<(usize, [Pt; 4])> = Vec::new();
+        let mut active_sources = vec![false; self.sources.len()];
+        for (source_idx, (spec, (smin_x, smin_y, smax_x, smax_y))) in
+            source_specs.iter().zip(source_bounds.iter()).enumerate()
+        {
+            let intersects = !(tile_max_x < *smin_x
+                || tile_min_x > *smax_x
+                || tile_max_y < *smin_y
+                || tile_min_y > *smax_y);
+            if !intersects {
+                continue;
+            }
+            let corners = tile_corners_in_source_raster_meta(&spec.as_meta(), tile_merc_corners)?;
+            loaded_sources.push((source_idx, corners));
+            active_sources[source_idx] = true;
+        }
+
+        let rgba = render_tile_chunked(
+            &mut self.sources,
+            &loaded_sources,
+            resampling,
+            nodata,
+            &mut self.cache,
+        )?;
+        for (i, source) in self.sources.iter_mut().enumerate() {
+            source.release_if_inactive(active_sources[i]);
+        }
+        crate::resample::encode_avif(&rgba)
+    }
+}
 
 pub fn convert(
     input: &[String],
@@ -42,40 +151,17 @@ pub fn convert(
     println!("Input args: {}; loading metadata...", input.join(" "));
     let sources_meta = crate::resample::load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
-    let mut sources = Vec::with_capacity(sources_meta.len());
-    for src in sources_meta {
-        let reader = match ChunkedTiffSampler::open(src.path.as_path(), src.width, src.height) {
-            Ok(sampler) => SourceReader::Chunked(sampler),
-            Err(_) => {
-                // Fallback path for unsupported layouts (e.g. planar TIFF).
-                SourceReader::FullDeferred(None)
-            }
-        };
-        sources.push(SourceSampler {
-            path: src.path,
-            georef: src.georef,
-            width: src.width,
-            height: src.height,
-            reader,
-        });
-    }
+    let source_specs: Vec<SourceSpec> = sources_meta
+        .into_iter()
+        .map(SourceSpec::from_meta)
+        .collect();
 
     let mut corners_merc = Vec::new();
-    let mut source_bounds = Vec::with_capacity(sources.len());
-    for source in &sources {
+    let mut source_bounds = Vec::with_capacity(source_specs.len());
+    for source in &source_specs {
         // Build per-source bbox in Web Mercator once so each tile can cheaply cull non-overlapping
         // datasets before attempting any raster sampling.
-        let meta = crate::resample::SourceMetadata {
-            path: source.path.clone(),
-            width: source.width,
-            height: source.height,
-            georef: Georef {
-                source_crs: source.georef.source_crs.clone(),
-                forward: source.georef.forward,
-                raster_offset: source.georef.raster_offset,
-            },
-        };
-        let corners = source_corners_merc_meta(&meta)?;
+        let corners = source_corners_merc_meta(&source.as_meta())?;
         let min_x = corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
         let max_x = corners
             .iter()
@@ -149,7 +235,7 @@ pub fn convert(
         .create(file)?;
 
     println!("Input args: {}", input.join(" "));
-    println!("Input files: {}", sources.len());
+    println!("Input files: {}", source_specs.len());
     println!("Output: {}", output.display());
     println!("Zoom range: {min_zoom}..{max_zoom}");
     let cache_bytes = if cache_mb == 0 {
@@ -158,7 +244,8 @@ pub fn convert(
         cache_mb.saturating_mul(1024 * 1024)
     };
     println!("Chunk cache budget: {} MiB", cache_bytes / (1024 * 1024));
-    let mut global_cache = GlobalChunkCache::new(cache_bytes);
+    let workers = rayon::current_num_threads().max(1);
+    let worker_cache_bytes = (cache_bytes / workers).max(1);
 
     for z in min_zoom..=max_zoom {
         // Cover the full extent by taking the inclusive tile range from bbox corners.
@@ -184,104 +271,87 @@ pub fn convert(
         println!("z={z}: rendering {total_tiles} tile(s) [0%]");
         let (encoded_tx, encoded_rx) =
             mpsc::channel::<(usize, u32, u32, Result<Vec<u8>, String>)>();
-        let max_in_flight = rayon::current_num_threads().max(1).saturating_mul(2);
-        let mut in_flight = 0usize;
         let mut next_to_write = 0usize;
         let mut ready = BTreeMap::new();
-
-        let mut reported_bucket = 0usize;
-        for (idx, (_tile_id, x, y)) in tile_list.into_iter().enumerate() {
-            let bounds = tile_bounds_webmerc(z, x, y);
-            let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
-            let tile_min_x = bounds.ul.x.min(bounds.lr.x);
-            let tile_max_x = bounds.ul.x.max(bounds.lr.x);
-            let tile_min_y = bounds.ul.y.min(bounds.lr.y);
-            let tile_max_y = bounds.ul.y.max(bounds.lr.y);
-
-            let mut loaded_sources = Vec::new();
-            let mut active_sources = vec![false; sources.len()];
-            for (source_idx, (_source, (smin_x, smin_y, smax_x, smax_y))) in
-                sources.iter().zip(source_bounds.iter()).enumerate()
-            {
-                // Skip sources whose mercator bbox does not overlap this output tile.
-                let intersects = !(tile_max_x < *smin_x
-                    || tile_min_x > *smax_x
-                    || tile_max_y < *smin_y
-                    || tile_min_y > *smax_y);
-                if !intersects {
-                    continue;
-                }
-                let meta = crate::resample::SourceMetadata {
-                    path: sources[source_idx].path.clone(),
-                    width: sources[source_idx].width,
-                    height: sources[source_idx].height,
-                    georef: Georef {
-                        source_crs: sources[source_idx].georef.source_crs.clone(),
-                        forward: sources[source_idx].georef.forward,
-                        raster_offset: sources[source_idx].georef.raster_offset,
-                    },
-                };
-                let corners = tile_corners_in_source_raster_meta(&meta, tile_merc_corners)?;
-                loaded_sources.push((source_idx, corners));
-                active_sources[source_idx] = true;
-            }
-
-            let rgba = render_tile_chunked(
-                &mut sources,
-                &loaded_sources,
-                resampling,
-                nodata,
-                &mut global_cache,
-            )?;
-
-            // Release fallback full-raster buffers once the source is no longer touched by
-            // subsequent tiles in this zoom loop.
-            for (i, source) in sources.iter_mut().enumerate() {
-                source.release_if_inactive(active_sources[i]);
-            }
-
+        let mut render_error: Option<String> = None;
+        let source_specs_ref = &source_specs;
+        let source_bounds_ref = &source_bounds;
+        std::thread::scope(|scope| {
             let tx = encoded_tx.clone();
-            rayon::spawn(move || {
-                let encoded = crate::resample::encode_avif(&rgba).map_err(|e| e.to_string());
-                let _ = tx.send((idx, x, y, encoded));
+            scope.spawn(move || {
+                tile_list
+                    .par_iter()
+                    .enumerate()
+                    .map_init(
+                        || WorkerState::new(source_specs_ref, worker_cache_bytes),
+                        |worker, (idx, (_tile_id, x, y))| {
+                            let encoded = worker
+                                .render_and_encode_tile(
+                                    z,
+                                    *x,
+                                    *y,
+                                    source_specs_ref,
+                                    source_bounds_ref,
+                                    resampling,
+                                    nodata,
+                                )
+                                .map_err(|e| e.to_string());
+                            let _ = tx.send((idx, *x, *y, encoded));
+                        },
+                    )
+                    .for_each(|_| {});
             });
-            in_flight += 1;
 
-            while in_flight >= max_in_flight {
-                let (done_idx, done_x, done_y, encoded) = encoded_rx
-                    .recv()
-                    .map_err(|e| format!("encoder worker disconnected: {e}"))?;
-                in_flight = in_flight.saturating_sub(1);
-                let avif = encoded.map_err(|msg| format!("avif encode failed: {msg}"))?;
+            drop(encoded_tx);
+            let mut reported_bucket = 0usize;
+            while next_to_write < total_tiles {
+                let (done_idx, done_x, done_y, encoded) = match encoded_rx.recv() {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        render_error = Some(format!("render worker disconnected: {e}"));
+                        break;
+                    }
+                };
+                let avif = match encoded {
+                    Ok(avif) => avif,
+                    Err(msg) => {
+                        render_error = Some(format!("tile render/encode failed: {msg}"));
+                        break;
+                    }
+                };
                 ready.insert(done_idx, (done_x, done_y, avif));
                 while let Some((write_x, write_y, bytes)) = ready.remove(&next_to_write) {
-                    let coord = TileCoord::new(z, write_x, write_y)?;
-                    writer.add_raw_tile(coord, &bytes)?;
+                    let coord = match TileCoord::new(z, write_x, write_y) {
+                        Ok(coord) => coord,
+                        Err(e) => {
+                            render_error = Some(format!("invalid tile coordinate: {e}"));
+                            break;
+                        }
+                    };
+                    if let Err(e) = writer.add_raw_tile(coord, &bytes) {
+                        render_error = Some(format!("failed to write tile: {e}"));
+                        break;
+                    }
                     next_to_write += 1;
+                    let percent = (next_to_write * 100) / total_tiles.max(1);
+                    let bucket = percent / 10;
+                    if bucket > reported_bucket {
+                        reported_bucket = bucket;
+                        println!("z={z}: {percent}% ({next_to_write}/{total_tiles})");
+                    }
+                }
+                if render_error.is_some() {
+                    break;
                 }
             }
-
-            let done = idx + 1;
-            let percent = (done * 100) / total_tiles.max(1);
-            let bucket = percent / 10;
-            if bucket > reported_bucket {
-                reported_bucket = bucket;
-                println!("z={z}: {percent}% ({done}/{total_tiles})");
-            }
+        });
+        if let Some(err) = render_error {
+            return Err(err.into());
         }
-        drop(encoded_tx);
-        while in_flight > 0 {
-            let (done_idx, done_x, done_y, encoded) = encoded_rx
-                .recv()
-                .map_err(|e| format!("encoder worker disconnected: {e}"))?;
-            in_flight = in_flight.saturating_sub(1);
-            let avif = encoded.map_err(|msg| format!("avif encode failed: {msg}"))?;
-            ready.insert(done_idx, (done_x, done_y, avif));
-            while let Some((write_x, write_y, bytes)) = ready.remove(&next_to_write) {
-                let coord = TileCoord::new(z, write_x, write_y)?;
-                writer.add_raw_tile(coord, &bytes)?;
-                next_to_write += 1;
-            }
+        if next_to_write != total_tiles {
+            return Err(
+                format!("z={z}: expected {total_tiles} tile(s), wrote {next_to_write}").into(),
+            );
         }
         println!("z={z}: complete [100%]");
     }
