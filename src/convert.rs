@@ -1,16 +1,14 @@
 use std::collections::BTreeSet;
 use std::fs::File;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
-use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    encode_avif, load_sources, parse_nodeta, render_tile_debug_multi, source_corners_merc,
-    tile_bounds_webmerc, tile_corners_in_source_raster, webmerc_to_tile, zoom_for_tile_size,
+    encode_avif, load_raster, load_source_metadata, parse_nodeta, render_tile_debug_multi,
+    source_corners_merc_meta, tile_bounds_webmerc, tile_corners_in_source_raster_meta,
+    webmerc_to_tile, zoom_for_tile_size,
 };
 
 pub fn convert(
@@ -23,11 +21,26 @@ pub fn convert(
     resampling: Resampling,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let nodata = parse_nodeta(nodeta)?;
-    let sources = load_sources(input, src_crs)?;
+    println!("Input pattern: {input}; loading metadata...");
+    let sources = load_source_metadata(input, src_crs)?;
+    println!("Loaded metadata for {} source file(s)", sources.len());
 
     let mut corners_merc = Vec::new();
+    let mut source_bounds = Vec::with_capacity(sources.len());
     for source in &sources {
-        corners_merc.extend_from_slice(&source_corners_merc(source)?);
+        let corners = source_corners_merc_meta(source)?;
+        let min_x = corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let max_x = corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+        let max_y = corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        source_bounds.push((min_x, min_y, max_x, max_y));
+        corners_merc.extend_from_slice(&corners);
     }
 
     let min_x_merc = corners_merc
@@ -104,55 +117,64 @@ pub fn convert(
                 tiles.insert((x, y));
             }
         }
-        let total_tiles = tiles.len();
+        let mut tile_list = Vec::with_capacity(tiles.len());
+        for (x, y) in tiles {
+            let coord = TileCoord::new(z, x, y)?;
+            let tile_id = TileId::from(coord).value();
+            tile_list.push((tile_id, x, y));
+        }
+        tile_list.sort_by_key(|(tile_id, _, _)| *tile_id);
+
+        let total_tiles = tile_list.len();
         println!("z={z}: rendering {total_tiles} tile(s) [0%]");
 
-        let progress_counter = Arc::new(AtomicUsize::new(0));
-        let progress_mark = Arc::new(AtomicUsize::new(0));
+        let mut reported_bucket = 0usize;
+        for (idx, (_tile_id, x, y)) in tile_list.into_iter().enumerate() {
+            let bounds = tile_bounds_webmerc(z, x, y);
+            let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
+            let tile_min_x = bounds.ul.x.min(bounds.lr.x);
+            let tile_max_x = bounds.ul.x.max(bounds.lr.x);
+            let tile_min_y = bounds.ul.y.min(bounds.lr.y);
+            let tile_max_y = bounds.ul.y.max(bounds.lr.y);
 
-        let mut encoded_tiles = tiles
-            .into_par_iter()
-            .map(|(x, y)| -> Result<(u64, TileCoord, Vec<u8>), String> {
-                let bounds = tile_bounds_webmerc(z, x, y);
-                let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
-
-                let mut per_source = Vec::with_capacity(sources.len());
-                for source in &sources {
-                    let corners = tile_corners_in_source_raster(source, tile_merc_corners)
-                        .map_err(|e| e.to_string())?;
-                    per_source.push((&source.raster, corners));
+            let mut loaded_sources = Vec::new();
+            let mut corners_per_source = Vec::new();
+            for (source, (smin_x, smin_y, smax_x, smax_y)) in
+                sources.iter().zip(source_bounds.iter())
+            {
+                let intersects = !(tile_max_x < *smin_x
+                    || tile_min_x > *smax_x
+                    || tile_max_y < *smin_y
+                    || tile_min_y > *smax_y);
+                if !intersects {
+                    continue;
                 }
+                let corners = tile_corners_in_source_raster_meta(source, tile_merc_corners)?;
+                let raster = load_raster(source.path.as_path())?;
+                loaded_sources.push(raster);
+                corners_per_source.push(corners);
+            }
 
-                // Per-tile rendering is parallelized; writer insertion is kept ordered below.
-                let rgba = render_tile_debug_multi(&per_source, resampling, nodata);
-                let avif = encode_avif(&rgba).map_err(|e| e.to_string())?;
-                let coord = TileCoord::new(z, x, y).map_err(|e| e.to_string())?;
-                let tile_id = TileId::from(coord).value();
+            let per_source = loaded_sources
+                .iter()
+                .zip(corners_per_source.iter())
+                .map(|(raster, corners)| (raster, *corners))
+                .collect::<Vec<_>>();
 
-                let done = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                let percent = (done * 100) / total_tiles.max(1);
-                let bucket = percent / 10;
-                let prev = progress_mark.load(Ordering::Relaxed);
-                if bucket > prev
-                    && progress_mark
-                        .compare_exchange(prev, bucket, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    println!("z={z}: {percent}% ({done}/{total_tiles})");
-                }
-
-                Ok((tile_id, coord, avif))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-        println!("z={z}: render complete [100%], writing tiles...");
-
-        // PMTiles writer expects deterministic tile order.
-        encoded_tiles.sort_by_key(|(tile_id, _, _)| *tile_id);
-        for (_, coord, avif) in encoded_tiles {
+            let rgba = render_tile_debug_multi(&per_source, resampling, nodata);
+            let avif = encode_avif(&rgba)?;
+            let coord = TileCoord::new(z, x, y)?;
             writer.add_raw_tile(coord, &avif)?;
+
+            let done = idx + 1;
+            let percent = (done * 100) / total_tiles.max(1);
+            let bucket = percent / 10;
+            if bucket > reported_bucket {
+                reported_bucket = bucket;
+                println!("z={z}: {percent}% ({done}/{total_tiles})");
+            }
         }
-        println!("z={z}: write complete");
+        println!("z={z}: complete [100%]");
     }
 
     writer.finalize()?;

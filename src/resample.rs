@@ -479,6 +479,13 @@ pub(crate) struct SourceDataset {
     pub(crate) georef: Georef,
 }
 
+pub(crate) struct SourceMetadata {
+    pub(crate) path: PathBuf,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) georef: Georef,
+}
+
 pub(crate) fn resolve_input_paths(input: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut paths = Vec::new();
     for entry in glob::glob(input)? {
@@ -506,38 +513,98 @@ pub(crate) fn load_sources(
     src_crs: Option<&str>,
 ) -> Result<Vec<SourceDataset>, Box<dyn std::error::Error>> {
     let paths = resolve_input_paths(input)?;
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
-        let raster = load_raster(path.as_path())?;
-        let georef = read_georef(path.as_path(), src_crs)?;
-        out.push(SourceDataset { raster, georef });
-    }
-    Ok(out)
+    load_sources_from_paths(&paths, src_crs)
+}
+
+pub(crate) fn load_sources_from_paths(
+    paths: &[PathBuf],
+    src_crs: Option<&str>,
+) -> Result<Vec<SourceDataset>, Box<dyn std::error::Error>> {
+    let sources = paths
+        .par_iter()
+        .map(|path| -> Result<SourceDataset, String> {
+            let raster = load_raster(path.as_path()).map_err(|e| {
+                format!("failed to load raster '{}': {e}", path.display())
+            })?;
+            let georef = read_georef(path.as_path(), src_crs).map_err(|e| {
+                format!("failed to read georef '{}': {e}", path.display())
+            })?;
+            Ok(SourceDataset { raster, georef })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    Ok(sources)
+}
+
+pub(crate) fn load_source_metadata(
+    input: &str,
+    src_crs: Option<&str>,
+) -> Result<Vec<SourceMetadata>, Box<dyn std::error::Error>> {
+    let paths = resolve_input_paths(input)?;
+    let sources = paths
+        .par_iter()
+        .map(|path| -> Result<SourceMetadata, String> {
+            let (width, height) = raster_dimensions(path.as_path())
+                .map_err(|e| format!("failed to read raster size '{}': {e}", path.display()))?;
+            let georef = read_georef(path.as_path(), src_crs)
+                .map_err(|e| format!("failed to read georef '{}': {e}", path.display()))?;
+            Ok(SourceMetadata {
+                path: path.clone(),
+                width,
+                height,
+                georef,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    Ok(sources)
+}
+
+fn raster_dimensions(path: &std::path::Path) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut decoder = Decoder::new(reader)?;
+    let (w, h) = decoder.dimensions()?;
+    Ok((w as usize, h as usize))
 }
 
 pub(crate) fn source_corners_merc(
     source: &SourceDataset,
 ) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    source_corners_merc_from_dims(&source.georef, source.raster.width, source.raster.height)
+}
+
+pub(crate) fn source_corners_merc_meta(
+    source: &SourceMetadata,
+) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    source_corners_merc_from_dims(&source.georef, source.width, source.height)
+}
+
+fn source_corners_merc_from_dims(
+    georef: &Georef,
+    width: usize,
+    height: usize,
+) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
     let corners_px = [
         Pt {
-            x: source.georef.raster_offset,
-            y: source.georef.raster_offset,
+            x: georef.raster_offset,
+            y: georef.raster_offset,
         },
         Pt {
-            x: source.raster.width as f64 + source.georef.raster_offset,
-            y: source.georef.raster_offset,
+            x: width as f64 + georef.raster_offset,
+            y: georef.raster_offset,
         },
         Pt {
-            x: source.raster.width as f64 + source.georef.raster_offset,
-            y: source.raster.height as f64 + source.georef.raster_offset,
+            x: width as f64 + georef.raster_offset,
+            y: height as f64 + georef.raster_offset,
         },
         Pt {
-            x: source.georef.raster_offset,
-            y: source.raster.height as f64 + source.georef.raster_offset,
+            x: georef.raster_offset,
+            y: height as f64 + georef.raster_offset,
         },
     ];
-    let corners_src = corners_px.map(|p| source.georef.forward.apply(p));
-    let to_merc = Proj::new_known_crs(&source.georef.source_crs, "EPSG:3857")?;
+    let corners_src = corners_px.map(|p| georef.forward.apply(p));
+    let to_merc = Proj::new_known_crs(&georef.source_crs, "EPSG:3857")?;
     let mut out = [Pt { x: 0.0, y: 0.0 }; 4];
     for (i, p) in corners_src.iter().enumerate() {
         let (x, y) = to_merc.transform2((p.x, p.y))?;
@@ -550,10 +617,24 @@ pub(crate) fn tile_corners_in_source_raster(
     source: &SourceDataset,
     tile_corners_merc: [Pt; 4],
 ) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    tile_corners_in_georef_raster(&source.georef, tile_corners_merc)
+}
+
+pub(crate) fn tile_corners_in_source_raster_meta(
+    source: &SourceMetadata,
+    tile_corners_merc: [Pt; 4],
+) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
+    tile_corners_in_georef_raster(&source.georef, tile_corners_merc)
+}
+
+fn tile_corners_in_georef_raster(
+    georef: &Georef,
+    tile_corners_merc: [Pt; 4],
+) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
     // Reproject tile corners from WebMercator to source CRS, then map CRS -> raster
     // with the inverse georeferencing transform. Rendering interpolates inside these corners.
-    let from_merc = Proj::new_known_crs("EPSG:3857", &source.georef.source_crs)?;
-    let inverse = source.georef.forward.invert()?;
+    let from_merc = Proj::new_known_crs("EPSG:3857", &georef.source_crs)?;
+    let inverse = georef.forward.invert()?;
     let mut out = [Pt { x: 0.0, y: 0.0 }; 4];
     for (i, p) in tile_corners_merc.iter().enumerate() {
         let (sx, sy) = from_merc.transform2((p.x, p.y))?;
