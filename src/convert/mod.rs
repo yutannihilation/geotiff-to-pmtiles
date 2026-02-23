@@ -2,7 +2,7 @@ mod cache;
 mod render;
 mod source;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::sync::mpsc;
 
@@ -235,18 +235,16 @@ pub fn convert(
         let (x_min, y_min) = webmerc_to_tile(min_x_merc, max_y_merc, z);
         let (x_max, y_max) = webmerc_to_tile(max_x_merc, min_y_merc, z);
 
-        let mut tiles = BTreeSet::new();
+        // Build tile list directly from the inclusive bbox range.
+        // We only need one ordering step: PMTiles tile id sort.
+        let tile_capacity = (x_max - x_min + 1) as usize * (y_max - y_min + 1) as usize;
+        let mut tile_list = Vec::with_capacity(tile_capacity);
         for y in y_min..=y_max {
             for x in x_min..=x_max {
-                tiles.insert((x, y));
+                let coord = TileCoord::new(z, x, y)?;
+                let tile_id = TileId::from(coord).value();
+                tile_list.push((tile_id, x, y));
             }
-        }
-        // Sort by PMTiles tile id for deterministic write order.
-        let mut tile_list = Vec::with_capacity(tiles.len());
-        for (x, y) in tiles {
-            let coord = TileCoord::new(z, x, y)?;
-            let tile_id = TileId::from(coord).value();
-            tile_list.push((tile_id, x, y));
         }
         tile_list.sort_by_key(|(tile_id, _, _)| *tile_id);
 
