@@ -46,10 +46,9 @@ CRS is read from `GeoKeyDirectoryTag`; when missing, `--src-crs` is required.
 
 ## Nodata
 
-`--nodeta` / `--nodata` supports:
+`--nodata` supports:
 
 - grayscale value (`0`)
 - RGB triplet (`255,255,255`)
 
 Matched nodata pixels are treated as transparent (`alpha=0`) and excluded from interpolation.
-

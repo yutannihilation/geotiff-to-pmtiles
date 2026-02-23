@@ -14,8 +14,8 @@ pub struct Cli {
     #[arg(long)]
     pub src_crs: Option<String>,
     /// NoData value, e.g. "0" or "255,255,255".
-    #[arg(long, alias = "nodata")]
-    pub nodeta: Option<String>,
+    #[arg(long)]
+    pub nodata: Option<String>,
     /// Minimum zoom level. If omitted, it is auto-determined.
     #[arg(long)]
     pub min_zoom: Option<u8>,

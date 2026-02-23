@@ -31,7 +31,7 @@ Arguments:
 Options:
   -o, --output <OUTPUT>          Output PMTiles path [default: out.pmtiles]
       --src-crs <SRC_CRS>        Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326")
-      --nodeta <NODETA>          NoData value, e.g. "0" or "255,255,255"
+      --nodata <NODATA>          NoData value, e.g. "0" or "255,255,255"
       --min-zoom <MIN_ZOOM>      Minimum zoom level. If omitted, it is auto-determined
       --max-zoom <MAX_ZOOM>      Maximum zoom level. If omitted, defaults to min_zoom + 3
       --resampling <RESAMPLING>  Resampling method [default: bilinear] [possible values: nearest, bilinear]
@@ -60,7 +60,7 @@ geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
 - To force in-app glob expansion consistently across shells, quote glob patterns.
 - If GeoTIFF georeferencing tags are missing, the tool falls back to adjacent world files (`.tfw`, `.TFW`, `.tifw`, `.TIFW`) when available.
 - `--src-crs` is required when CRS metadata is missing.
-- `--nodeta` (alias `--nodata`) supports values like `0` or `255,255,255` and maps nodata output to alpha `0`.
+- `--nodata` supports values like `0` or `255,255,255` and maps nodata output to alpha `0`.
 - Resampling methods:
   - `nearest`: chooses nearest valid sample.
   - `bilinear`: weighted interpolation that ignores invalid/nodata neighbors.

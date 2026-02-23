@@ -15,7 +15,7 @@ fn main() -> ExitCode {
         &cli.output,
         convert::ConvertOptions {
             src_crs: cli.src_crs.as_deref(),
-            nodeta: cli.nodeta.as_deref(),
+            nodata: cli.nodata.as_deref(),
             min_zoom: cli.min_zoom,
             max_zoom: cli.max_zoom,
             resampling: cli.resampling,

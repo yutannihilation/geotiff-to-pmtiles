@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Georef, Pt, SourceMetadata, parse_nodeta, source_corners_merc_georef, tile_bounds_webmerc,
+    Georef, Pt, SourceMetadata, parse_nodata, source_corners_merc_georef, tile_bounds_webmerc,
     tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
@@ -27,7 +27,7 @@ const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 pub struct ConvertOptions<'a> {
     pub src_crs: Option<&'a str>,
-    pub nodeta: Option<&'a str>,
+    pub nodata: Option<&'a str>,
     pub min_zoom: Option<u8>,
     pub max_zoom: Option<u8>,
     pub resampling: Resampling,
@@ -133,13 +133,13 @@ pub fn convert(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ConvertOptions {
         src_crs,
-        nodeta,
+        nodata,
         min_zoom: min_zoom_opt,
         max_zoom: max_zoom_opt,
         resampling,
         cache_mb,
     } = options;
-    let nodata = parse_nodeta(nodeta)?;
+    let nodata = parse_nodata(nodata)?;
     // Memory-first strategy:
     // 1) load only metadata up front
     // 2) decode TIFF chunks lazily during sampling

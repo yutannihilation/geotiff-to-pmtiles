@@ -1,6 +1,6 @@
 use super::NoDataSpec;
 
-pub(crate) fn parse_nodeta(
+pub(crate) fn parse_nodata(
     value: Option<&str>,
 ) -> Result<Option<NoDataSpec>, Box<dyn std::error::Error>> {
     let Some(value) = value else {
@@ -20,21 +20,21 @@ pub(crate) fn parse_nodeta(
         1 => {
             let v: u8 = parts[0]
                 .parse()
-                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+                .map_err(|_| format!("invalid --nodata value: {value}"))?;
             Ok(Some(NoDataSpec::Gray(v)))
         }
         3 => {
             let r: u8 = parts[0]
                 .parse()
-                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+                .map_err(|_| format!("invalid --nodata value: {value}"))?;
             let g: u8 = parts[1]
                 .parse()
-                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+                .map_err(|_| format!("invalid --nodata value: {value}"))?;
             let b: u8 = parts[2]
                 .parse()
-                .map_err(|_| format!("invalid --nodeta value: {value}"))?;
+                .map_err(|_| format!("invalid --nodata value: {value}"))?;
             Ok(Some(NoDataSpec::Rgb(r, g, b)))
         }
-        _ => Err(format!("invalid --nodeta value: {value}. Use '0' or '255,255,255'.").into()),
+        _ => Err(format!("invalid --nodata value: {value}. Use '0' or '255,255,255'.").into()),
     }
 }
