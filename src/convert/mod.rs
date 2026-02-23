@@ -2,8 +2,9 @@ mod cache;
 mod render;
 mod source;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::sync::mpsc;
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
@@ -181,6 +182,12 @@ pub fn convert(
 
         let total_tiles = tile_list.len();
         println!("z={z}: rendering {total_tiles} tile(s) [0%]");
+        let (encoded_tx, encoded_rx) =
+            mpsc::channel::<(usize, u32, u32, Result<Vec<u8>, String>)>();
+        let max_in_flight = rayon::current_num_threads().max(1).saturating_mul(2);
+        let mut in_flight = 0usize;
+        let mut next_to_write = 0usize;
+        let mut ready = BTreeMap::new();
 
         let mut reported_bucket = 0usize;
         for (idx, (_tile_id, x, y)) in tile_list.into_iter().enumerate() {
@@ -226,14 +233,32 @@ pub fn convert(
                 nodata,
                 &mut global_cache,
             )?;
-            let avif = crate::resample::encode_avif(&rgba)?;
-            let coord = TileCoord::new(z, x, y)?;
-            writer.add_raw_tile(coord, &avif)?;
 
             // Release fallback full-raster buffers once the source is no longer touched by
             // subsequent tiles in this zoom loop.
             for (i, source) in sources.iter_mut().enumerate() {
                 source.release_if_inactive(active_sources[i]);
+            }
+
+            let tx = encoded_tx.clone();
+            rayon::spawn(move || {
+                let encoded = crate::resample::encode_avif(&rgba).map_err(|e| e.to_string());
+                let _ = tx.send((idx, x, y, encoded));
+            });
+            in_flight += 1;
+
+            while in_flight >= max_in_flight {
+                let (done_idx, done_x, done_y, encoded) = encoded_rx
+                    .recv()
+                    .map_err(|e| format!("encoder worker disconnected: {e}"))?;
+                in_flight = in_flight.saturating_sub(1);
+                let avif = encoded.map_err(|msg| format!("avif encode failed: {msg}"))?;
+                ready.insert(done_idx, (done_x, done_y, avif));
+                while let Some((write_x, write_y, bytes)) = ready.remove(&next_to_write) {
+                    let coord = TileCoord::new(z, write_x, write_y)?;
+                    writer.add_raw_tile(coord, &bytes)?;
+                    next_to_write += 1;
+                }
             }
 
             let done = idx + 1;
@@ -242,6 +267,20 @@ pub fn convert(
             if bucket > reported_bucket {
                 reported_bucket = bucket;
                 println!("z={z}: {percent}% ({done}/{total_tiles})");
+            }
+        }
+        drop(encoded_tx);
+        while in_flight > 0 {
+            let (done_idx, done_x, done_y, encoded) = encoded_rx
+                .recv()
+                .map_err(|e| format!("encoder worker disconnected: {e}"))?;
+            in_flight = in_flight.saturating_sub(1);
+            let avif = encoded.map_err(|msg| format!("avif encode failed: {msg}"))?;
+            ready.insert(done_idx, (done_x, done_y, avif));
+            while let Some((write_x, write_y, bytes)) = ready.remove(&next_to_write) {
+                let coord = TileCoord::new(z, write_x, write_y)?;
+                writer.add_raw_tile(coord, &bytes)?;
+                next_to_write += 1;
             }
         }
         println!("z={z}: complete [100%]");
