@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
     pub resampling: Resampling,
     /// Global chunk cache size in MiB for TIFF partial reads.
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, default_value_t = 128)]
     pub cache_mb: usize,
     /// AVIF quality in the range 1..=100 (higher is better quality, larger files).
     #[arg(

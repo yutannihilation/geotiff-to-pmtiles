@@ -34,7 +34,7 @@ Options:
       --min-zoom <MIN_ZOOM>      Minimum zoom level. If omitted, it is auto-determined
       --max-zoom <MAX_ZOOM>      Maximum zoom level. If omitted, defaults to min_zoom + 3
       --resampling <RESAMPLING>  Resampling method [default: bilinear] [possible values: nearest, bilinear]
-      --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 1024]
+      --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 128]
       --quality <AVIF_QUALITY>   AVIF quality in the range 1..=100 (higher is better quality, larger files) [default: 55]
       --speed <AVIF_SPEED>       AVIF speed in the range 1..=10 (lower is slower but better compression) [default: 4]
   -h, --help                     Print help

@@ -21,7 +21,7 @@ use self::source::{ChunkedTiffSampler, SourceReader, SourceSampler};
 
 // Global cache budget shared across all input sources/chunks.
 // This caps memory growth when many TIFF files are involved.
-const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 1024 * 1024 * 1024;
+const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 pub struct ConvertOptions<'a> {
     pub src_crs: Option<&'a str>,
