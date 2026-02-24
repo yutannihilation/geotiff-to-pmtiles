@@ -1,4 +1,5 @@
 use clap::Parser;
+use clap::value_parser;
 
 #[derive(Debug, Parser)]
 #[command(name = "geotiff-to-pmtiles")]
@@ -26,8 +27,22 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
     pub resampling: Resampling,
     /// Global chunk cache size in MiB for TIFF partial reads.
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = 1024)]
     pub cache_mb: usize,
+    /// AVIF quality in the range 1..=100 (higher is better quality, larger files).
+    #[arg(
+        long,
+        default_value_t = crate::resample::DEFAULT_AVIF_QUALITY,
+        value_parser = value_parser!(u8).range(1..=100)
+    )]
+    pub avif_quality: u8,
+    /// AVIF speed in the range 1..=10 (lower is slower but better compression).
+    #[arg(
+        long,
+        default_value_t = crate::resample::DEFAULT_AVIF_SPEED,
+        value_parser = value_parser!(u8).range(1..=10)
+    )]
+    pub avif_speed: u8,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

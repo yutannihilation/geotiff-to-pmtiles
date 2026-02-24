@@ -12,18 +12,17 @@ use rayon::prelude::*;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Georef, Pt, SourceMetadata, parse_nodata, source_corners_merc_georef, tile_bounds_webmerc,
-    tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
+    Georef, Pt, SourceMetadata, TILE_SIZE, parse_nodata, source_corners_merc_georef,
+    tile_bounds_webmerc, tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
 use self::cache::GlobalChunkCache;
 use self::render::render_tile_chunked;
 use self::source::{ChunkedTiffSampler, SourceReader, SourceSampler};
 
-const TILE_SIZE: usize = 512;
 // Global cache budget shared across all input sources/chunks.
 // This caps memory growth when many TIFF files are involved.
-const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 1024 * 1024 * 1024;
 
 pub struct ConvertOptions<'a> {
     pub src_crs: Option<&'a str>,
@@ -32,6 +31,8 @@ pub struct ConvertOptions<'a> {
     pub max_zoom: Option<u8>,
     pub resampling: Resampling,
     pub cache_mb: usize,
+    pub avif_quality: u8,
+    pub avif_speed: u8,
 }
 
 struct SourceSpec {
@@ -86,6 +87,8 @@ impl WorkerState {
         source_bounds: &[(f64, f64, f64, f64)],
         resampling: Resampling,
         nodata: Option<crate::resample::NoDataSpec>,
+        avif_quality: u8,
+        avif_speed: u8,
     ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
         let (z, x, y) = tile;
         let bounds = tile_bounds_webmerc(z, x, y);
@@ -128,7 +131,11 @@ impl WorkerState {
             return Ok(None);
         }
 
-        Ok(Some(crate::resample::encode_avif(&rgba)?))
+        Ok(Some(crate::resample::encode_avif(
+            &rgba,
+            avif_speed,
+            avif_quality,
+        )?))
     }
 }
 
@@ -144,6 +151,8 @@ pub fn convert(
         max_zoom: max_zoom_opt,
         resampling,
         cache_mb,
+        avif_quality,
+        avif_speed,
     } = options;
     let nodata = parse_nodata(nodata)?;
     // Memory-first strategy:
@@ -240,6 +249,7 @@ pub fn convert(
     println!("Input files: {}", source_specs.len());
     println!("Output: {}", output.display());
     println!("Zoom range: {min_zoom}..{max_zoom}");
+    println!("AVIF: quality={avif_quality}, speed={avif_speed}");
     let cache_bytes = if cache_mb == 0 {
         DEFAULT_GLOBAL_CHUNK_CACHE_BYTES
     } else {
@@ -320,6 +330,8 @@ pub fn convert(
                                     source_bounds_ref,
                                     resampling,
                                     nodata,
+                                    avif_quality,
+                                    avif_speed,
                                 )
                                 .map_err(|e| e.to_string());
                             let _ = tx.send((idx, *x, *y, encoded));

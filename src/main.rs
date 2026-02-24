@@ -20,6 +20,8 @@ fn main() -> ExitCode {
             max_zoom: cli.max_zoom,
             resampling: cli.resampling,
             cache_mb: cli.cache_mb,
+            avif_quality: cli.avif_quality,
+            avif_speed: cli.avif_speed,
         },
     );
 

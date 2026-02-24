@@ -23,7 +23,7 @@ pub(super) fn render_tile_chunked(
     nodata: Option<NoDataSpec>,
     cache: &mut GlobalChunkCache,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    // Render one 512x512 output tile in scanline order.
+    // Render one TILE_SIZE x TILE_SIZE output tile in scanline order.
     let mut out = vec![0_u8; TILE_SIZE * TILE_SIZE * 4];
     let denom = (TILE_SIZE as f64 - 1.0).max(1.0);
     for j in 0..TILE_SIZE {
