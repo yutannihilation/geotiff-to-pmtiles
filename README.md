@@ -65,3 +65,11 @@ geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
 - Resampling methods:
   - `nearest`: chooses nearest valid sample.
   - `bilinear`: weighted interpolation that ignores invalid/nodata neighbors.
+
+## Development Utilities
+
+Generate benchmark GeoTIFF/world-file fixtures with:
+
+```sh
+cargo run --manifest-path tools/generate-bench-data/Cargo.toml
+```

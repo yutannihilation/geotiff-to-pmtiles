@@ -1,0 +1,11 @@
+[package]
+name = "generate-bench-data"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+image = { version = "0.25.9", default-features = false, features = ["tiff"] }
+
+[package.metadata.dist]
+dist = false

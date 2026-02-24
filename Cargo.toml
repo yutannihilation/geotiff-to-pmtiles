@@ -3,6 +3,11 @@ name = "geotiff-to-pmtiles"
 version = "0.0.7"
 edition = "2024"
 repository = "https://github.com/yutannihilation/geotiff-to-pmtiles"
+autobins = false
+
+[[bin]]
+name = "geotiff-to-pmtiles"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
