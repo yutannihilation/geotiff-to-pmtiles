@@ -2,7 +2,6 @@ mod cache;
 mod render;
 mod source;
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::sync::mpsc;
 
@@ -61,6 +60,8 @@ struct WorkerState {
 #[derive(Clone, Copy)]
 struct TileJob {
     tile_id: u64,
+    // Position in global tile_id-sorted write order.
+    write_idx: usize,
     z: u8,
     x: u32,
     y: u32,
@@ -331,6 +332,7 @@ pub fn convert(
                 let tile_id = TileId::from(coord).value();
                 jobs.push(TileJob {
                     tile_id,
+                    write_idx: 0,
                     z,
                     x,
                     y,
@@ -354,18 +356,23 @@ pub fn convert(
     let total_tiles = jobs.len();
     println!("rendering {} tile(s) [0%]", total_tiles);
 
-    // Render order: spatial proximity across zoom levels for better chunk cache reuse.
-    let mut render_jobs = jobs.clone();
-    render_jobs.sort_by_key(|job| (job.locality_key, job.z));
-
     // Write order: strict PMTiles tile_id ascending for clustered output.
     let mut write_jobs = jobs;
     write_jobs.sort_by_key(|job| job.tile_id);
+    // Persist the global output sequence number so render workers can return results
+    // without a tile_id->index lookup in the writer thread.
+    for (write_idx, job) in write_jobs.iter_mut().enumerate() {
+        job.write_idx = write_idx;
+    }
 
-    let (encoded_tx, encoded_rx) =
-        mpsc::channel::<(u64, u8, u32, u32, Result<Option<Vec<u8>>, String>)>();
+    // Render order: spatial proximity across zoom levels for better chunk cache reuse.
+    let mut render_jobs = write_jobs.clone();
+    render_jobs.sort_by_key(|job| (job.locality_key, job.z));
+
+    let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
     let mut next_to_write = 0usize;
-    let mut ready_by_tile_id = HashMap::<u64, (u8, u32, u32, Option<Vec<u8>>)>::new();
+    // O(1) rendezvous buffer keyed by write order index.
+    let mut ready_by_write_idx = vec![None::<Option<Vec<u8>>>; total_tiles];
     let mut render_error: Option<String> = None;
     let source_specs_ref = &source_specs;
     let source_bounds_ref = &source_bounds;
@@ -390,7 +397,7 @@ pub fn convert(
                                 avif_speed,
                             )
                             .map_err(|e| e.to_string());
-                        let _ = tx.send((job.tile_id, job.z, job.x, job.y, encoded));
+                        let _ = tx.send((job.write_idx, encoded));
                     },
                 )
                 .for_each(|_| {});
@@ -399,7 +406,7 @@ pub fn convert(
         drop(encoded_tx);
         let mut reported_bucket = 0usize;
         while next_to_write < total_tiles {
-            let (tile_id, done_z, done_x, done_y, encoded) = match encoded_rx.recv() {
+            let (done_write_idx, encoded) = match encoded_rx.recv() {
                 Ok(msg) => msg,
                 Err(e) => {
                     render_error = Some(format!("render worker disconnected: {e}"));
@@ -413,14 +420,16 @@ pub fn convert(
                     break;
                 }
             };
-            ready_by_tile_id.insert(tile_id, (done_z, done_x, done_y, avif));
+            // Store completed result in its final output slot.
+            ready_by_write_idx[done_write_idx] = Some(avif);
             while next_to_write < total_tiles {
-                let expected = write_jobs[next_to_write];
-                let Some((write_z, write_x, write_y, bytes_opt)) =
-                    ready_by_tile_id.remove(&expected.tile_id)
-                else {
+                let Some(bytes_opt) = ready_by_write_idx[next_to_write].take() else {
                     break;
                 };
+                let write_job = write_jobs[next_to_write];
+                let write_z = write_job.z;
+                let write_x = write_job.x;
+                let write_y = write_job.y;
                 let zi = (write_z - min_zoom) as usize;
                 let Some(bytes) = bytes_opt else {
                     transparent_by_zoom[zi] += 1;
