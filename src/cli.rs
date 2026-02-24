@@ -31,14 +31,14 @@ pub struct Cli {
     pub cache_mb: usize,
     /// AVIF quality in the range 1..=100 (higher is better quality, larger files).
     #[arg(
-        long,
+        long = "quality",
         default_value_t = crate::resample::DEFAULT_AVIF_QUALITY,
         value_parser = value_parser!(u8).range(1..=100)
     )]
     pub avif_quality: u8,
     /// AVIF speed in the range 1..=10 (lower is slower but better compression).
     #[arg(
-        long,
+        long = "speed",
         default_value_t = crate::resample::DEFAULT_AVIF_SPEED,
         value_parser = value_parser!(u8).range(1..=10)
     )]
