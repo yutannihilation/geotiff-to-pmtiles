@@ -86,7 +86,7 @@ impl WorkerState {
         source_bounds: &[(f64, f64, f64, f64)],
         resampling: Resampling,
         nodata: Option<crate::resample::NoDataSpec>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
         let (z, x, y) = tile;
         let bounds = tile_bounds_webmerc(z, x, y);
         let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
@@ -122,7 +122,13 @@ impl WorkerState {
         for (i, source) in self.sources.iter_mut().enumerate() {
             source.release_if_inactive(active_sources[i]);
         }
-        crate::resample::encode_avif(&rgba)
+        // If every output pixel is transparent, skip emitting this tile entirely.
+        // This avoids writing visual "empty" tiles where nodata/out-of-bounds dominates.
+        if rgba.chunks_exact(4).all(|px| px[3] == 0) {
+            return Ok(None);
+        }
+
+        Ok(Some(crate::resample::encode_avif(&rgba)?))
     }
 }
 
@@ -290,8 +296,9 @@ pub fn convert(
         }
         println!("z={z}: rendering {total_tiles} tile(s) [0%]");
         let (encoded_tx, encoded_rx) =
-            mpsc::channel::<(usize, u32, u32, Result<Vec<u8>, String>)>();
+            mpsc::channel::<(usize, u32, u32, Result<Option<Vec<u8>>, String>)>();
         let mut next_to_write = 0usize;
+        let mut skipped_transparent = 0usize;
         let mut ready = BTreeMap::new();
         let mut render_error: Option<String> = None;
         let source_specs_ref = &source_specs;
@@ -339,7 +346,18 @@ pub fn convert(
                     }
                 };
                 ready.insert(done_idx, (done_x, done_y, avif));
-                while let Some((write_x, write_y, bytes)) = ready.remove(&next_to_write) {
+                while let Some((write_x, write_y, bytes_opt)) = ready.remove(&next_to_write) {
+                    let Some(bytes) = bytes_opt else {
+                        skipped_transparent += 1;
+                        next_to_write += 1;
+                        let percent = (next_to_write * 100) / total_tiles.max(1);
+                        let bucket = percent / 10;
+                        if bucket > reported_bucket {
+                            reported_bucket = bucket;
+                            println!("z={z}: {percent}% ({next_to_write}/{total_tiles})");
+                        }
+                        continue;
+                    };
                     let coord = match TileCoord::new(z, write_x, write_y) {
                         Ok(coord) => coord,
                         Err(e) => {
@@ -371,6 +389,9 @@ pub fn convert(
             return Err(
                 format!("z={z}: expected {total_tiles} tile(s), wrote {next_to_write}").into(),
             );
+        }
+        if skipped_transparent > 0 {
+            println!("z={z}: skipped {skipped_transparent} fully transparent tile(s)");
         }
         println!("z={z}: complete [100%]");
     }
