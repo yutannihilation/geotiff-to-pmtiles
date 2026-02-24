@@ -13,7 +13,6 @@ Compared to the existing solutions:
 
 - Single statically linked binary with no external runtime dependencies.
 - Supports multiple input arguments, so no pre-merge step with `gdal merge` is needed.
-- Memory efficient by design (with the tradeoff of more repeated disk reads).
 - Outputs AVIF tiles.
 
 ## Installation
