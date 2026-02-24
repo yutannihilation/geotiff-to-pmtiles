@@ -2,7 +2,7 @@ mod cache;
 mod render;
 mod source;
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fs::File;
 use std::sync::mpsc;
 
@@ -56,6 +56,39 @@ impl SourceSpec {
 struct WorkerState {
     sources: Vec<SourceSampler>,
     cache: GlobalChunkCache,
+}
+
+#[derive(Clone, Copy)]
+struct TileJob {
+    tile_id: u64,
+    z: u8,
+    x: u32,
+    y: u32,
+    locality_key: u64,
+}
+
+fn split_by_1_bits(mut value: u64) -> u64 {
+    // Interleave lower 32 bits: abcdef... -> a0b0c0d0...
+    value &= 0x0000_0000_FFFF_FFFF;
+    value = (value | (value << 16)) & 0x0000_FFFF_0000_FFFF;
+    value = (value | (value << 8)) & 0x00FF_00FF_00FF_00FF;
+    value = (value | (value << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
+    value = (value | (value << 2)) & 0x3333_3333_3333_3333;
+    value = (value | (value << 1)) & 0x5555_5555_5555_5555;
+    value
+}
+
+fn morton_key_2d(x: u64, y: u64) -> u64 {
+    split_by_1_bits(x) | (split_by_1_bits(y) << 1)
+}
+
+fn tile_locality_key(z: u8, x: u32, y: u32, max_zoom: u8) -> u64 {
+    // Normalize every tile center onto a max_zoom grid to keep nearby areas
+    // close in render order even when z differs.
+    let shift = (max_zoom - z) as u32;
+    let nx = (((x as u64) << shift) << 1) | 1;
+    let ny = (((y as u64) << shift) << 1) | 1;
+    morton_key_2d(nx, ny)
 }
 
 impl WorkerState {
@@ -260,19 +293,19 @@ pub fn convert(
     // Split budget across workers so total memory stays close to `cache_mb`.
     let worker_cache_bytes = (cache_bytes / workers).max(1);
 
+    let zoom_span = (max_zoom - min_zoom + 1) as usize;
+    let mut skipped_empty_by_zoom = vec![0usize; zoom_span];
+    let mut transparent_by_zoom = vec![0usize; zoom_span];
+    let mut tiles_by_zoom = vec![0usize; zoom_span];
+    let mut jobs = Vec::<TileJob>::new();
+
     for z in min_zoom..=max_zoom {
         // Cover the full extent by taking the inclusive tile range from bbox corners.
         let (x_min, y_min) = webmerc_to_tile(min_x_merc, max_y_merc, z);
         let (x_max, y_max) = webmerc_to_tile(max_x_merc, min_y_merc, z);
 
-        // Build tile list directly from the inclusive bbox range.
-        // This avoids the previous BTreeSet allocation + copy pass.
-        // We only keep one ordering step: PMTiles tile id sort.
-        // Empty tiles (no source bbox overlap) are filtered out here so they are
-        // not rendered/encoded and do not get an entry in PMTiles.
         let tile_capacity = (x_max - x_min + 1) as usize * (y_max - y_min + 1) as usize;
-        let mut tile_list = Vec::with_capacity(tile_capacity);
-        let mut skipped_empty = 0usize;
+        jobs.reserve(tile_capacity);
         for y in y_min..=y_max {
             for x in x_min..=x_max {
                 let bounds = tile_bounds_webmerc(z, x, y);
@@ -289,119 +322,152 @@ pub fn convert(
                                 || tile_max_y < *smin_y
                                 || tile_min_y > *smax_y)
                         });
+                let zi = (z - min_zoom) as usize;
                 if !intersects_any {
-                    skipped_empty += 1;
+                    skipped_empty_by_zoom[zi] += 1;
                     continue;
                 }
                 let coord = TileCoord::new(z, x, y)?;
                 let tile_id = TileId::from(coord).value();
-                tile_list.push((tile_id, x, y));
+                jobs.push(TileJob {
+                    tile_id,
+                    z,
+                    x,
+                    y,
+                    locality_key: tile_locality_key(z, x, y, max_zoom),
+                });
+                tiles_by_zoom[zi] += 1;
             }
         }
-        tile_list.sort_by_key(|(tile_id, _, _)| *tile_id);
+    }
 
-        let total_tiles = tile_list.len();
+    for z in min_zoom..=max_zoom {
+        let zi = (z - min_zoom) as usize;
+        let total_tiles = tiles_by_zoom[zi];
+        let skipped_empty = skipped_empty_by_zoom[zi];
         if skipped_empty > 0 {
             println!("z={z}: skipped {skipped_empty} empty tile(s)");
         }
-        println!("z={z}: rendering {total_tiles} tile(s) [0%]");
-        let (encoded_tx, encoded_rx) =
-            mpsc::channel::<(usize, u32, u32, Result<Option<Vec<u8>>, String>)>();
-        let mut next_to_write = 0usize;
-        let mut skipped_transparent = 0usize;
-        let mut ready = BTreeMap::new();
-        let mut render_error: Option<String> = None;
-        let source_specs_ref = &source_specs;
-        let source_bounds_ref = &source_bounds;
-        std::thread::scope(|scope| {
-            let tx = encoded_tx.clone();
-            scope.spawn(move || {
-                // `map_init` gives each rayon worker its own mutable worker state.
-                tile_list
-                    .par_iter()
-                    .enumerate()
-                    .map_init(
-                        || WorkerState::new(source_specs_ref, worker_cache_bytes),
-                        |worker, (idx, (_tile_id, x, y))| {
-                            let encoded = worker
-                                .render_and_encode_tile(
-                                    (z, *x, *y),
-                                    source_specs_ref,
-                                    source_bounds_ref,
-                                    resampling,
-                                    nodata,
-                                    avif_quality,
-                                    avif_speed,
-                                )
-                                .map_err(|e| e.to_string());
-                            let _ = tx.send((idx, *x, *y, encoded));
-                        },
-                    )
-                    .for_each(|_| {});
-            });
+        println!("z={z}: rendering {total_tiles} tile(s)");
+    }
 
-            drop(encoded_tx);
-            let mut reported_bucket = 0usize;
+    let total_tiles = jobs.len();
+    println!("rendering {} tile(s) [0%]", total_tiles);
+
+    // Render order: spatial proximity across zoom levels for better chunk cache reuse.
+    let mut render_jobs = jobs.clone();
+    render_jobs.sort_by_key(|job| (job.locality_key, job.z));
+
+    // Write order: strict PMTiles tile_id ascending for clustered output.
+    let mut write_jobs = jobs;
+    write_jobs.sort_by_key(|job| job.tile_id);
+
+    let (encoded_tx, encoded_rx) =
+        mpsc::channel::<(u64, u8, u32, u32, Result<Option<Vec<u8>>, String>)>();
+    let mut next_to_write = 0usize;
+    let mut ready_by_tile_id = HashMap::<u64, (u8, u32, u32, Option<Vec<u8>>)>::new();
+    let mut render_error: Option<String> = None;
+    let source_specs_ref = &source_specs;
+    let source_bounds_ref = &source_bounds;
+
+    std::thread::scope(|scope| {
+        let tx = encoded_tx.clone();
+        scope.spawn(move || {
+            // `map_init` gives each rayon worker its own mutable worker state.
+            render_jobs
+                .par_iter()
+                .map_init(
+                    || WorkerState::new(source_specs_ref, worker_cache_bytes),
+                    |worker, job| {
+                        let encoded = worker
+                            .render_and_encode_tile(
+                                (job.z, job.x, job.y),
+                                source_specs_ref,
+                                source_bounds_ref,
+                                resampling,
+                                nodata,
+                                avif_quality,
+                                avif_speed,
+                            )
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send((job.tile_id, job.z, job.x, job.y, encoded));
+                    },
+                )
+                .for_each(|_| {});
+        });
+
+        drop(encoded_tx);
+        let mut reported_bucket = 0usize;
+        while next_to_write < total_tiles {
+            let (tile_id, done_z, done_x, done_y, encoded) = match encoded_rx.recv() {
+                Ok(msg) => msg,
+                Err(e) => {
+                    render_error = Some(format!("render worker disconnected: {e}"));
+                    break;
+                }
+            };
+            let avif = match encoded {
+                Ok(avif) => avif,
+                Err(msg) => {
+                    render_error = Some(format!("tile render/encode failed: {msg}"));
+                    break;
+                }
+            };
+            ready_by_tile_id.insert(tile_id, (done_z, done_x, done_y, avif));
             while next_to_write < total_tiles {
-                let (done_idx, done_x, done_y, encoded) = match encoded_rx.recv() {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        render_error = Some(format!("render worker disconnected: {e}"));
-                        break;
-                    }
+                let expected = write_jobs[next_to_write];
+                let Some((write_z, write_x, write_y, bytes_opt)) =
+                    ready_by_tile_id.remove(&expected.tile_id)
+                else {
+                    break;
                 };
-                let avif = match encoded {
-                    Ok(avif) => avif,
-                    Err(msg) => {
-                        render_error = Some(format!("tile render/encode failed: {msg}"));
-                        break;
-                    }
-                };
-                ready.insert(done_idx, (done_x, done_y, avif));
-                while let Some((write_x, write_y, bytes_opt)) = ready.remove(&next_to_write) {
-                    let Some(bytes) = bytes_opt else {
-                        skipped_transparent += 1;
-                        next_to_write += 1;
-                        let percent = (next_to_write * 100) / total_tiles.max(1);
-                        let bucket = percent / 10;
-                        if bucket > reported_bucket {
-                            reported_bucket = bucket;
-                            println!("z={z}: {percent}% ({next_to_write}/{total_tiles})");
-                        }
-                        continue;
-                    };
-                    let coord = match TileCoord::new(z, write_x, write_y) {
-                        Ok(coord) => coord,
-                        Err(e) => {
-                            render_error = Some(format!("invalid tile coordinate: {e}"));
-                            break;
-                        }
-                    };
-                    if let Err(e) = writer.add_raw_tile(coord, &bytes) {
-                        render_error = Some(format!("failed to write tile: {e}"));
-                        break;
-                    }
+                let zi = (write_z - min_zoom) as usize;
+                let Some(bytes) = bytes_opt else {
+                    transparent_by_zoom[zi] += 1;
                     next_to_write += 1;
                     let percent = (next_to_write * 100) / total_tiles.max(1);
                     let bucket = percent / 10;
                     if bucket > reported_bucket {
                         reported_bucket = bucket;
-                        println!("z={z}: {percent}% ({next_to_write}/{total_tiles})");
+                        println!("{percent}% ({next_to_write}/{total_tiles})");
                     }
-                }
-                if render_error.is_some() {
+                    continue;
+                };
+                let coord = match TileCoord::new(write_z, write_x, write_y) {
+                    Ok(coord) => coord,
+                    Err(e) => {
+                        render_error = Some(format!("invalid tile coordinate: {e}"));
+                        break;
+                    }
+                };
+                if let Err(e) = writer.add_raw_tile(coord, &bytes) {
+                    render_error = Some(format!("failed to write tile: {e}"));
                     break;
                 }
+                next_to_write += 1;
+                let percent = (next_to_write * 100) / total_tiles.max(1);
+                let bucket = percent / 10;
+                if bucket > reported_bucket {
+                    reported_bucket = bucket;
+                    println!("{percent}% ({next_to_write}/{total_tiles})");
+                }
             }
-        });
-        if let Some(err) = render_error {
-            return Err(err.into());
+            if render_error.is_some() {
+                break;
+            }
         }
-        if next_to_write != total_tiles {
-            return Err(
-                format!("z={z}: expected {total_tiles} tile(s), wrote {next_to_write}").into(),
-            );
-        }
+    });
+
+    if let Some(err) = render_error {
+        return Err(err.into());
+    }
+    if next_to_write != total_tiles {
+        return Err(format!("expected {total_tiles} tile(s), wrote {next_to_write}").into());
+    }
+
+    for z in min_zoom..=max_zoom {
+        let zi = (z - min_zoom) as usize;
+        let skipped_transparent = transparent_by_zoom[zi];
         if skipped_transparent > 0 {
             println!("z={z}: skipped {skipped_transparent} fully transparent tile(s)");
         }
