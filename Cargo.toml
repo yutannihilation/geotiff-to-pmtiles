@@ -13,7 +13,7 @@ path = "src/main.rs"
 clap = { version = "4.5.60", features = ["derive"] }
 tiff = "0.11"
 pmtiles = { version = "0.20.0", default-features = false, features = ["write"] }
-proj-lite = { git = "https://github.com/yutannihilation/proj-rs-lite.git", version = "0.1.0" }
+proj-lite = { git = "https://github.com/yutannihilation/proj-rs-lite.git", rev = "15455f3813da307683e8619f88f09e9e5943fd1c", version = "0.1.0" }
 image = { version = "0.25.9", default-features = false, features = ["avif", "tiff"] }
 ravif = "0.13.0"
 imgref = { version = "1.12.0", default-features = false }
