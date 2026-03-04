@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_read_f64_roundtrip() {
-        let val: f64 = 3.14159265358979;
+        let val: f64 = 1.23456789012345;
         let le_bytes = val.to_le_bytes();
         assert_eq!(ByteOrder::LittleEndian.read_f64(&le_bytes), val);
         let be_bytes = val.to_be_bytes();
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_read_f32_roundtrip() {
-        let val: f32 = 2.71828;
+        let val: f32 = 1.23456;
         let le_bytes = val.to_le_bytes();
         assert_eq!(ByteOrder::LittleEndian.read_f32(&le_bytes), val);
         let be_bytes = val.to_be_bytes();

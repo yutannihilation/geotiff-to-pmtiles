@@ -330,6 +330,6 @@ mod tests {
         let buf = build_ifd_buf(bo, &[(256, 3, 1, vo)]);
 
         let ifd = read_ifd(&buf, bo, 0).await.unwrap();
-        assert!(ifd.tags.get(&999).is_none());
+        assert!(!ifd.tags.contains_key(&999));
     }
 }
