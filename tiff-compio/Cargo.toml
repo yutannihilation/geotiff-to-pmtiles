@@ -1,0 +1,15 @@
+[package]
+name = "tiff-compio"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+compio = { version = "0.18", features = ["io", "runtime"] }
+weezl = "0.1"
+flate2 = "1"
+zune-jpeg = "0.5"
+thiserror = "2"
+
+[dev-dependencies]
+compio = { version = "0.18", features = ["io", "runtime", "macros", "fs"] }
+tiff = "0.11"
