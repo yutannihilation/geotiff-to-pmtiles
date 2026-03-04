@@ -148,14 +148,6 @@ impl<R: AsyncReadAt> TiffReader<R> {
         chunk::ChunkLayout::from_reader(self)
     }
 
-    /// Returns the actual pixel dimensions `(width, height)` of the chunk at `idx`.
-    ///
-    /// Edge chunks (right column, bottom row) may be smaller than the nominal
-    /// chunk size. This method accounts for that.
-    pub fn chunk_data_dimensions(layout: &ChunkLayout, idx: u32) -> (u32, u32) {
-        layout.chunk_data_dimensions(idx)
-    }
-
     /// Read and decompress a single chunk (strip or tile), returning raw pixel bytes.
     ///
     /// The returned `Vec<u8>` contains decompressed, interleaved pixel data in
@@ -181,10 +173,9 @@ impl<R: AsyncReadAt> TiffReader<R> {
         let byte_count = layout.byte_counts[idx as usize];
 
         if byte_count == 0 {
-            // Empty chunk — return zeros
-            let (w, h) = layout.chunk_data_dimensions(idx);
-            let pixel_bytes = w as usize
-                * h as usize
+            // Empty chunk — return zeros with full nominal tile dimensions
+            let pixel_bytes = layout.chunk_width as usize
+                * layout.chunk_height as usize
                 * layout.samples_per_pixel as usize
                 * bytes_per_sample(&layout.bits_per_sample);
             return Ok(vec![0u8; pixel_bytes]);
@@ -192,9 +183,12 @@ impl<R: AsyncReadAt> TiffReader<R> {
 
         let compressed = read_exact_at(&self.reader, offset, byte_count as usize).await?;
 
-        let (w, h) = layout.chunk_data_dimensions(idx);
-        let expected_size = w as usize
-            * h as usize
+        // For tiles, the decompressed data always contains the full nominal
+        // tile_width × tile_height pixels (including out-of-bounds padding on
+        // edge tiles). For strips, chunk_width == image_width and chunk_height
+        // == rows_per_strip, so using the nominal size is also correct.
+        let expected_size = layout.chunk_width as usize
+            * layout.chunk_height as usize
             * layout.samples_per_pixel as usize
             * bytes_per_sample(&layout.bits_per_sample);
 
@@ -224,7 +218,14 @@ impl<R: AsyncReadAt> TiffReader<R> {
             let col = (idx % layout.chunks_across) * layout.chunk_width;
             let row = (idx / layout.chunks_across) * layout.chunk_height;
 
-            let chunk_row_bytes = chunk_w as usize * layout.samples_per_pixel as usize * bps;
+            // Source stride uses the full nominal chunk width because tiles
+            // always store tile_width × tile_height pixels (with padding on
+            // edge tiles). For strips, chunk_width == image_width so this
+            // equals the clipped width anyway.
+            let src_row_bytes =
+                layout.chunk_width as usize * layout.samples_per_pixel as usize * bps;
+            // Only copy the valid (clipped) pixel columns to the destination.
+            let copy_len = chunk_w as usize * layout.samples_per_pixel as usize * bps;
 
             for y in 0..chunk_h as usize {
                 let img_row = row as usize + y;
@@ -233,9 +234,7 @@ impl<R: AsyncReadAt> TiffReader<R> {
                 }
                 let dst_start =
                     img_row * row_bytes + col as usize * layout.samples_per_pixel as usize * bps;
-                let src_start = y * chunk_row_bytes;
-                let copy_len = chunk_row_bytes
-                    .min(row_bytes - col as usize * layout.samples_per_pixel as usize * bps);
+                let src_start = y * src_row_bytes;
                 image[dst_start..dst_start + copy_len]
                     .copy_from_slice(&chunk_data[src_start..src_start + copy_len]);
             }
