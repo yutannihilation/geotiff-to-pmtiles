@@ -98,7 +98,9 @@ tiff-compio/src/
 cargo test -p tiff-compio
 ```
 
-Tests use in-memory `Vec<u8>` buffers (which implement `AsyncReadAt`) to construct synthetic TIFF structures, so no fixture files are needed for unit tests.
+Unit tests use in-memory `Vec<u8>` buffers (which implement `AsyncReadAt`) to construct synthetic TIFF structures, so no fixture files are needed.
+
+Integration tests use real TIFF images from the [`image-tiff`](https://github.com/image-rs/image-tiff) crate (MIT/Apache-2.0). See `tests/images/COPYRIGHT` for libtiff-specific notices.
 
 ## Dependencies
 
