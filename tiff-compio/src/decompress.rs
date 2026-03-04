@@ -32,26 +32,26 @@ use crate::error::TiffError;
 /// - [`TiffError::Unsupported`] for unknown compression types.
 /// - [`TiffError::Decompress`] if the codec fails.
 pub fn decompress(
-    data: &[u8],
+    data: Vec<u8>,
     compression: u16,
     expected_size: usize,
 ) -> Result<Vec<u8>, TiffError> {
     match compression {
         1 => {
-            // No compression
-            Ok(data.to_vec())
+            // No compression — return the owned buffer directly, no copy needed
+            Ok(data)
         }
         5 => {
             // LZW
-            decompress_lzw(data, expected_size)
+            decompress_lzw(&data, expected_size)
         }
         8 | 32946 => {
             // Deflate (both old-style 32946 and new-style 8)
-            decompress_deflate(data, expected_size)
+            decompress_deflate(&data, expected_size)
         }
         7 => {
             // JPEG
-            decompress_jpeg(data)
+            decompress_jpeg(&data)
         }
         other => Err(TiffError::Unsupported(format!("compression type {other}"))),
     }
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_no_compression() {
         let data = vec![1, 2, 3, 4, 5];
-        let result = decompress(&data, 1, 5).unwrap();
+        let result = decompress(data.clone(), 1, 5).unwrap();
         assert_eq!(result, data);
     }
 
@@ -106,7 +106,7 @@ mod tests {
         let original = vec![0u8; 256]; // repetitive data compresses well
         let mut encoder = weezl::encode::Encoder::new(weezl::BitOrder::Msb, 8);
         let compressed = encoder.encode(&original).unwrap();
-        let result = decompress(&compressed, 5, 256).unwrap();
+        let result = decompress(compressed, 5, 256).unwrap();
         assert_eq!(result, original);
     }
 
@@ -120,7 +120,7 @@ mod tests {
         encoder.write_all(original).unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let result = decompress(&compressed, 8, original.len()).unwrap();
+        let result = decompress(compressed, 8, original.len()).unwrap();
         assert_eq!(result, original);
     }
 
@@ -135,13 +135,13 @@ mod tests {
         let compressed = encoder.finish().unwrap();
 
         // 32946 is the old-style Deflate tag
-        let result = decompress(&compressed, 32946, original.len()).unwrap();
+        let result = decompress(compressed, 32946, original.len()).unwrap();
         assert_eq!(result, original);
     }
 
     #[test]
     fn test_unsupported_compression() {
-        let result = decompress(&[0], 9999, 0);
+        let result = decompress(vec![0], 9999, 0);
         assert!(result.is_err());
     }
 }

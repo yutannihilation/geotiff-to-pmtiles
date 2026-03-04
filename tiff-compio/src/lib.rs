@@ -172,13 +172,12 @@ impl<R: AsyncReadAt> TiffReader<R> {
         let offset = layout.offsets[idx as usize];
         let byte_count = layout.byte_counts[idx as usize];
 
+        let nominal_chunk_bytes =
+            layout.chunk_width as usize * layout.chunk_height as usize * layout.bytes_per_pixel;
+
         if byte_count == 0 {
             // Empty chunk — return zeros with full nominal tile dimensions
-            let pixel_bytes = layout.chunk_width as usize
-                * layout.chunk_height as usize
-                * layout.samples_per_pixel as usize
-                * bytes_per_sample(&layout.bits_per_sample);
-            return Ok(vec![0u8; pixel_bytes]);
+            return Ok(vec![0u8; nominal_chunk_bytes]);
         }
 
         let compressed = read_exact_at(&self.reader, offset, byte_count as usize).await?;
@@ -187,12 +186,7 @@ impl<R: AsyncReadAt> TiffReader<R> {
         // tile_width × tile_height pixels (including out-of-bounds padding on
         // edge tiles). For strips, chunk_width == image_width and chunk_height
         // == rows_per_strip, so using the nominal size is also correct.
-        let expected_size = layout.chunk_width as usize
-            * layout.chunk_height as usize
-            * layout.samples_per_pixel as usize
-            * bytes_per_sample(&layout.bits_per_sample);
-
-        decompress::decompress(&compressed, layout.compression, expected_size)
+        decompress::decompress(compressed, layout.compression, nominal_chunk_bytes)
     }
 
     /// Read all chunks and assemble them into a contiguous, full-image pixel buffer.
@@ -207,8 +201,8 @@ impl<R: AsyncReadAt> TiffReader<R> {
     /// [`read_chunk`](TiffReader::read_chunk) to control memory usage and enable
     /// concurrent processing.
     pub async fn read_image(&self, layout: &ChunkLayout) -> Result<Vec<u8>, TiffError> {
-        let bps = bytes_per_sample(&layout.bits_per_sample);
-        let row_bytes = layout.image_width as usize * layout.samples_per_pixel as usize * bps;
+        let bpp = layout.bytes_per_pixel;
+        let row_bytes = layout.image_width as usize * bpp;
         let mut image = vec![0u8; layout.image_height as usize * row_bytes];
 
         for idx in 0..layout.chunk_count {
@@ -222,18 +216,16 @@ impl<R: AsyncReadAt> TiffReader<R> {
             // always store tile_width × tile_height pixels (with padding on
             // edge tiles). For strips, chunk_width == image_width so this
             // equals the clipped width anyway.
-            let src_row_bytes =
-                layout.chunk_width as usize * layout.samples_per_pixel as usize * bps;
+            let src_row_bytes = layout.chunk_width as usize * bpp;
             // Only copy the valid (clipped) pixel columns to the destination.
-            let copy_len = chunk_w as usize * layout.samples_per_pixel as usize * bps;
+            let copy_len = chunk_w as usize * bpp;
 
             for y in 0..chunk_h as usize {
                 let img_row = row as usize + y;
                 if img_row >= layout.image_height as usize {
                     break;
                 }
-                let dst_start =
-                    img_row * row_bytes + col as usize * layout.samples_per_pixel as usize * bps;
+                let dst_start = img_row * row_bytes + col as usize * bpp;
                 let src_start = y * src_row_bytes;
                 image[dst_start..dst_start + copy_len]
                     .copy_from_slice(&chunk_data[src_start..src_start + copy_len]);
@@ -264,7 +256,7 @@ async fn read_exact_at<R: AsyncReadAt>(
 ///
 /// Uses the first element of the array (all samples are assumed to have the
 /// same bit depth). Returns 1 if the array is empty.
-fn bytes_per_sample(bits_per_sample: &[u16]) -> usize {
+pub(crate) fn bytes_per_sample(bits_per_sample: &[u16]) -> usize {
     if bits_per_sample.is_empty() {
         1
     } else {

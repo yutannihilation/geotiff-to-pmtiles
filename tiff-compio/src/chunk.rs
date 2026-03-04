@@ -19,6 +19,7 @@
 //! chunks, each of size `chunk_width × chunk_height` (with edge chunks potentially smaller).
 
 use crate::TiffReader;
+use crate::bytes_per_sample;
 use crate::error::TiffError;
 use crate::tag;
 
@@ -83,6 +84,9 @@ pub struct ChunkLayout {
     pub bits_per_sample: Vec<u16>,
     /// Number of samples (channels) per pixel.
     pub samples_per_pixel: u16,
+    /// Bytes per pixel (`samples_per_pixel * ceil(bits_per_sample[0] / 8)`).
+    /// Cached to avoid recomputation on every chunk read.
+    pub bytes_per_pixel: usize,
 }
 
 impl ChunkLayout {
@@ -175,6 +179,8 @@ impl ChunkLayout {
         let chunks_down = image_height.div_ceil(tile_height);
         let chunk_count = chunks_across * chunks_down;
 
+        let bytes_per_pixel = samples_per_pixel as usize * bytes_per_sample(&bits_per_sample);
+
         Ok(Self {
             chunk_type: ChunkType::Tile,
             image_width,
@@ -189,6 +195,7 @@ impl ChunkLayout {
             compression,
             bits_per_sample,
             samples_per_pixel,
+            bytes_per_pixel,
         })
     }
 
@@ -218,6 +225,8 @@ impl ChunkLayout {
         let chunks_down = image_height.div_ceil(rows_per_strip);
         let chunk_count = chunks_down; // strips span full width
 
+        let bytes_per_pixel = samples_per_pixel as usize * bytes_per_sample(&bits_per_sample);
+
         Ok(Self {
             chunk_type: ChunkType::Strip,
             image_width,
@@ -232,6 +241,7 @@ impl ChunkLayout {
             compression,
             bits_per_sample,
             samples_per_pixel,
+            bytes_per_pixel,
         })
     }
 
@@ -280,6 +290,7 @@ mod tests {
             compression: 1,
             bits_per_sample: vec![8],
             samples_per_pixel: 3,
+            bytes_per_pixel: 3,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (256, 256));
@@ -303,6 +314,7 @@ mod tests {
             compression: 1,
             bits_per_sample: vec![8],
             samples_per_pixel: 3,
+            bytes_per_pixel: 3,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (44, 256)); // right edge
@@ -326,6 +338,7 @@ mod tests {
             compression: 1,
             bits_per_sample: vec![8],
             samples_per_pixel: 3,
+            bytes_per_pixel: 3,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (100, 100));
         assert_eq!(layout.chunk_data_dimensions(1), (100, 100));
