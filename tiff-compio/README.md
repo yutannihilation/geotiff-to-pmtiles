@@ -40,18 +40,18 @@ compio::runtime::block_on(async {
     let file = File::open("image.tif").await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
 
-    // Read image dimensions
-    let (width, height) = reader.dimensions().await.unwrap();
+    // Metadata access is synchronous — no .await needed
+    let (width, height) = reader.dimensions().unwrap();
     println!("Image size: {width} x {height}");
 
-    // Access GeoTIFF tags
-    if let Some(tiepoint) = reader.find_tag(tag::MODEL_TIEPOINT).await.unwrap() {
+    // Access GeoTIFF tags (also synchronous)
+    if let Some(tiepoint) = reader.find_tag(tag::MODEL_TIEPOINT) {
         let values = tiepoint.into_f64_vec().unwrap();
         println!("Tiepoint: {values:?}");
     }
 
-    // Read pixel data chunk by chunk
-    let layout = reader.chunk_layout().await.unwrap();
+    // Compute chunk layout once (synchronous)
+    let layout = reader.chunk_layout().unwrap();
     for idx in 0..layout.chunk_count {
         let pixels = reader.read_chunk(&layout, idx).await.unwrap();
         let (w, h) = layout.chunk_data_dimensions(idx);
@@ -81,9 +81,9 @@ tiff-compio/src/
 ### Reading pipeline
 
 1. **Header** (8 bytes at offset 0) — determines byte order (LE/BE) and first IFD offset.
-2. **IFD** (variable size) — reads entry count, N x 12-byte entries, and next IFD pointer. Entries are stored in a `HashMap<u16, IfdEntry>` keyed by tag ID.
-3. **Tag resolution** — for each tag lookup, if `type_size * count <= 4`, the value is decoded inline from the entry's 4-byte field; otherwise, those 4 bytes are a file offset and the data is fetched with a positional read.
-4. **Chunk layout** — computed once from strip/tile tags. Unifies strips and tiles into a common `ChunkLayout` structure with offset/bytecount arrays.
+2. **IFD** (variable size) — reads entry count, N x 12-byte entries, and next IFD pointer. All tag values are **eagerly resolved** during this step: inline values (≤4 bytes) are decoded from entries, and out-of-line values are fetched via positional reads. Results are stored in a `HashMap<u16, TagValue>` keyed by tag ID.
+3. **Tag lookup** — after construction, `find_tag`, `dimensions`, and `chunk_layout` are all **synchronous** `HashMap` lookups with no I/O.
+4. **Chunk layout** — computed once from the resolved tags. Unifies strips and tiles into a common `ChunkLayout` structure with offset/bytecount arrays.
 5. **Chunk reading** — positional read of compressed bytes, followed by synchronous decompression (LZW/Deflate/JPEG).
 
 ### Design decisions

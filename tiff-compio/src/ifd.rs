@@ -4,6 +4,10 @@
 //! TIFF file. Each entry stores a tag ID, data type, value count, and either the
 //! value itself (if it fits in 4 bytes) or a file offset to the value data.
 //!
+//! All tag values are **eagerly resolved** during [`read_ifd`]: inline values are
+//! decoded immediately, and out-of-line values are fetched via positional reads.
+//! This means subsequent tag lookups are simple `HashMap` lookups with no I/O.
+//!
 //! # IFD binary layout
 //!
 //! ```text
@@ -25,29 +29,14 @@ use crate::error::TiffError;
 use crate::read_exact_at;
 use crate::tag::TagValue;
 
-/// A raw IFD entry parsed from 12 bytes.
+/// A parsed Image File Directory: a map of tag ID to resolved value.
 ///
-/// The `value_offset` field contains either the value itself (if the total data
-/// size is <= 4 bytes) or a file offset to where the data is stored.
-#[derive(Debug, Clone)]
-pub struct IfdEntry {
-    /// TIFF data type code (1=BYTE, 2=ASCII, 3=SHORT, 4=LONG, 5=RATIONAL, etc.).
-    pub data_type: u16,
-    /// Number of values of the given data type.
-    pub count: u32,
-    /// Raw 4-byte value/offset field. Contains inline data if
-    /// `type_size(data_type) * count <= 4`, otherwise a u32 file offset.
-    pub value_offset: [u8; 4],
-}
-
-/// A parsed Image File Directory: a map of tag ID to entry.
-///
-/// The IFD is read once during [`TiffReader::new`](crate::TiffReader::new) and
-/// then queried via [`resolve_tag`](Ifd::resolve_tag) for individual tag values.
+/// All tag values are resolved eagerly during construction (in [`read_ifd`]),
+/// so lookups are simple `HashMap::get` calls with no async I/O.
 #[derive(Debug)]
 pub struct Ifd {
-    /// Tag entries keyed by tag ID for O(1) lookup.
-    pub entries: HashMap<u16, IfdEntry>,
+    /// Resolved tag values keyed by tag ID for O(1) lookup.
+    pub tags: HashMap<u16, TagValue>,
     /// File offset to the next IFD, or 0 if this is the last one.
     #[allow(dead_code)]
     pub next_ifd_offset: u32,
@@ -87,14 +76,15 @@ fn type_size(data_type: u16) -> Option<usize> {
     }
 }
 
-/// Read and parse an IFD at the given file offset.
+/// Read, parse, and eagerly resolve all tags in an IFD at the given file offset.
 ///
-/// Performs three positional reads:
+/// Performs positional reads for:
 /// 1. 2 bytes for the entry count.
 /// 2. `count * 12` bytes for all entries.
 /// 3. 4 bytes for the next IFD offset.
+/// 4. One additional read per out-of-line tag value (where `type_size * count > 4`).
 ///
-/// Returns a populated [`Ifd`] with entries indexed by tag ID.
+/// Returns a populated [`Ifd`] with all tag values fully resolved.
 pub async fn read_ifd<R: AsyncReadAt>(
     reader: &R,
     byte_order: ByteOrder,
@@ -108,22 +98,31 @@ pub async fn read_ifd<R: AsyncReadAt>(
     let entries_offset = offset as u64 + 2;
     let entries_buf = read_exact_at(reader, entries_offset, entry_count * 12).await?;
 
-    let mut entries = HashMap::with_capacity(entry_count);
+    let mut tags = HashMap::with_capacity(entry_count);
     for i in 0..entry_count {
         let base = i * 12;
         let tag = byte_order.read_u16(&entries_buf[base..]);
         let data_type = byte_order.read_u16(&entries_buf[base + 2..]);
         let count = byte_order.read_u32(&entries_buf[base + 4..]);
-        let mut value_offset = [0u8; 4];
-        value_offset.copy_from_slice(&entries_buf[base + 8..base + 12]);
-        entries.insert(
-            tag,
-            IfdEntry {
-                data_type,
-                count,
-                value_offset,
-            },
-        );
+        let value_offset_bytes = &entries_buf[base + 8..base + 12];
+
+        let ts = match type_size(data_type) {
+            Some(s) => s,
+            None => continue, // skip unknown data types
+        };
+        let total_size = ts * count as usize;
+
+        let raw = if total_size <= 4 {
+            // Inline: data is in the value_offset bytes
+            value_offset_bytes[..total_size].to_vec()
+        } else {
+            // Out-of-line: value_offset is a file offset
+            let file_offset = byte_order.read_u32(value_offset_bytes) as u64;
+            read_exact_at(reader, file_offset, total_size).await?
+        };
+
+        let value = parse_tag_value(byte_order, data_type, count, &raw)?;
+        tags.insert(tag, value);
     }
 
     // Read next IFD offset (4 bytes)
@@ -132,47 +131,9 @@ pub async fn read_ifd<R: AsyncReadAt>(
     let next_ifd_offset = byte_order.read_u32(&next_buf);
 
     Ok(Ifd {
-        entries,
+        tags,
         next_ifd_offset,
     })
-}
-
-impl Ifd {
-    /// Resolve a tag's value by its ID, reading out-of-line data if needed.
-    ///
-    /// If the tag's total data size (`type_size * count`) is <= 4 bytes, the value
-    /// is decoded inline from the IFD entry. Otherwise, the entry's 4-byte field
-    /// is interpreted as a file offset, and the data is fetched via a positional read.
-    ///
-    /// Returns `Ok(None)` if the tag is not present in this IFD.
-    pub async fn resolve_tag<R: AsyncReadAt>(
-        &self,
-        reader: &R,
-        byte_order: ByteOrder,
-        tag_id: u16,
-    ) -> Result<Option<TagValue>, TiffError> {
-        let entry = match self.entries.get(&tag_id) {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-
-        let ts = type_size(entry.data_type).ok_or_else(|| {
-            TiffError::Unsupported(format!("unknown TIFF data type {}", entry.data_type))
-        })?;
-        let total_size = ts * entry.count as usize;
-
-        let raw = if total_size <= 4 {
-            // Inline: data is in the value_offset bytes
-            entry.value_offset[..total_size].to_vec()
-        } else {
-            // Out-of-line: value_offset is a file offset
-            let offset = byte_order.read_u32(&entry.value_offset) as u64;
-            read_exact_at(reader, offset, total_size).await?
-        };
-
-        let value = parse_tag_value(byte_order, entry.data_type, entry.count, &raw)?;
-        Ok(Some(value))
-    }
 }
 
 /// Parse raw bytes into a [`TagValue`] based on the TIFF data type code.
@@ -276,7 +237,6 @@ mod tests {
     use super::*;
 
     /// Build a minimal TIFF IFD buffer with the given entries.
-    /// Returns (full_buffer, ifd_offset).
     fn build_ifd_buf(byte_order: ByteOrder, entries: &[(u16, u16, u32, [u8; 4])]) -> Vec<u8> {
         let count = entries.len() as u16;
         let mut buf = Vec::new();
@@ -318,8 +278,8 @@ mod tests {
         let ifd_buf = build_ifd_buf(bo, &[(256, 3, 1, vo)]);
 
         let ifd = read_ifd(&ifd_buf, bo, 0).await.unwrap();
-        assert_eq!(ifd.entries.len(), 1);
-        assert!(ifd.entries.contains_key(&256));
+        assert_eq!(ifd.tags.len(), 1);
+        assert!(ifd.tags.contains_key(&256));
         assert_eq!(ifd.next_ifd_offset, 0);
     }
 
@@ -331,7 +291,7 @@ mod tests {
         let buf = build_ifd_buf(bo, &[(256, 3, 1, vo)]);
 
         let ifd = read_ifd(&buf, bo, 0).await.unwrap();
-        let val = ifd.resolve_tag(&buf, bo, 256).await.unwrap().unwrap();
+        let val = ifd.tags.get(&256).unwrap().clone();
         match val {
             TagValue::U16(v) => assert_eq!(v, vec![42]),
             other => panic!("unexpected: {other:?}"),
@@ -355,7 +315,7 @@ mod tests {
         buf[104..106].copy_from_slice(&8u16.to_le_bytes());
 
         let ifd = read_ifd(&buf, bo, 0).await.unwrap();
-        let val = ifd.resolve_tag(&buf, bo, 258).await.unwrap().unwrap();
+        let val = ifd.tags.get(&258).unwrap().clone();
         match val {
             TagValue::U16(v) => assert_eq!(v, vec![8, 8, 8]),
             other => panic!("unexpected: {other:?}"),
@@ -370,7 +330,6 @@ mod tests {
         let buf = build_ifd_buf(bo, &[(256, 3, 1, vo)]);
 
         let ifd = read_ifd(&buf, bo, 0).await.unwrap();
-        let val = ifd.resolve_tag(&buf, bo, 999).await.unwrap();
-        assert!(val.is_none());
+        assert!(ifd.tags.get(&999).is_none());
     }
 }

@@ -88,6 +88,9 @@ pub struct ChunkLayout {
 impl ChunkLayout {
     /// Build a `ChunkLayout` by reading strip/tile tags from a [`TiffReader`].
     ///
+    /// This is synchronous because all tag values were eagerly resolved during
+    /// [`TiffReader::new`].
+    ///
     /// Automatically detects strip vs. tile organization based on the presence
     /// of the `TileWidth` tag (322). Falls back to strip mode if tile tags
     /// are absent.
@@ -98,32 +101,29 @@ impl ChunkLayout {
     /// - `BitsPerSample`: defaults to `[8]` if missing.
     /// - `SamplesPerPixel`: defaults to 1 if missing.
     /// - `RowsPerStrip`: defaults to `ImageLength` (single strip) if missing.
-    pub async fn from_reader<R: AsyncReadAt>(reader: &TiffReader<R>) -> Result<Self, TiffError> {
-        let (image_width, image_height) = reader.dimensions().await?;
+    pub fn from_reader<R: AsyncReadAt>(reader: &TiffReader<R>) -> Result<Self, TiffError> {
+        let (image_width, image_height) = reader.dimensions()?;
 
         let compression = reader
             .find_tag(tag::COMPRESSION)
-            .await?
             .map(|v| v.into_u16())
             .transpose()?
             .unwrap_or(1); // default: no compression
 
         let bits_per_sample = reader
             .find_tag(tag::BITS_PER_SAMPLE)
-            .await?
             .map(|v| v.into_u16_vec())
             .transpose()?
             .unwrap_or_else(|| vec![8]);
 
         let samples_per_pixel = reader
             .find_tag(tag::SAMPLES_PER_PIXEL)
-            .await?
             .map(|v| v.into_u16())
             .transpose()?
             .unwrap_or(1);
 
         // Determine strip vs tile
-        let has_tile_width = reader.find_tag(tag::TILE_WIDTH).await?.is_some();
+        let has_tile_width = reader.find_tag(tag::TILE_WIDTH).is_some();
 
         if has_tile_width {
             Self::from_tile_tags(
@@ -134,7 +134,6 @@ impl ChunkLayout {
                 bits_per_sample,
                 samples_per_pixel,
             )
-            .await
         } else {
             Self::from_strip_tags(
                 reader,
@@ -144,11 +143,10 @@ impl ChunkLayout {
                 bits_per_sample,
                 samples_per_pixel,
             )
-            .await
         }
     }
 
-    async fn from_tile_tags<R: AsyncReadAt>(
+    fn from_tile_tags<R: AsyncReadAt>(
         reader: &TiffReader<R>,
         image_width: u32,
         image_height: u32,
@@ -158,22 +156,18 @@ impl ChunkLayout {
     ) -> Result<Self, TiffError> {
         let tile_width = reader
             .find_tag(tag::TILE_WIDTH)
-            .await?
             .ok_or_else(|| TiffError::Format("missing TileWidth".into()))?
             .into_u32()?;
         let tile_height = reader
             .find_tag(tag::TILE_LENGTH)
-            .await?
             .ok_or_else(|| TiffError::Format("missing TileLength".into()))?
             .into_u32()?;
         let offsets = reader
             .find_tag(tag::TILE_OFFSETS)
-            .await?
             .ok_or_else(|| TiffError::Format("missing TileOffsets".into()))?
             .into_u64_vec()?;
         let byte_counts = reader
             .find_tag(tag::TILE_BYTE_COUNTS)
-            .await?
             .ok_or_else(|| TiffError::Format("missing TileByteCounts".into()))?
             .into_u64_vec()?;
 
@@ -198,7 +192,7 @@ impl ChunkLayout {
         })
     }
 
-    async fn from_strip_tags<R: AsyncReadAt>(
+    fn from_strip_tags<R: AsyncReadAt>(
         reader: &TiffReader<R>,
         image_width: u32,
         image_height: u32,
@@ -208,19 +202,16 @@ impl ChunkLayout {
     ) -> Result<Self, TiffError> {
         let rows_per_strip = reader
             .find_tag(tag::ROWS_PER_STRIP)
-            .await?
             .map(|v| v.into_u32())
             .transpose()?
             .unwrap_or(image_height); // default: single strip
 
         let offsets = reader
             .find_tag(tag::STRIP_OFFSETS)
-            .await?
             .ok_or_else(|| TiffError::Format("missing StripOffsets".into()))?
             .into_u64_vec()?;
         let byte_counts = reader
             .find_tag(tag::STRIP_BYTE_COUNTS)
-            .await?
             .ok_or_else(|| TiffError::Format("missing StripByteCounts".into()))?
             .into_u64_vec()?;
 

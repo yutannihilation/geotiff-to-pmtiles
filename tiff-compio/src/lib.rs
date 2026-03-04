@@ -12,6 +12,11 @@
 //! - Multiple chunk reads can be issued concurrently from the same file handle without
 //!   requiring a mutex or other synchronization.
 //!
+//! All IFD tag values are **eagerly resolved** during [`TiffReader::new`], so metadata
+//! accessors like [`find_tag`](TiffReader::find_tag), [`dimensions`](TiffReader::dimensions),
+//! and [`chunk_layout`](TiffReader::chunk_layout) are synchronous. Only actual pixel I/O
+//! ([`read_chunk`](TiffReader::read_chunk), [`read_image`](TiffReader::read_image)) is async.
+//!
 //! # Supported features
 //!
 //! - **Byte order:** Little-endian (`II`) and big-endian (`MM`).
@@ -26,17 +31,15 @@
 //! use tiff_compio::{TiffReader, tag};
 //!
 //! compio::runtime::block_on(async {
-//!     // Any type implementing AsyncReadAt works — files, memory buffers, etc.
 //!     let file = File::open("image.tif").await.unwrap();
 //!     let reader = TiffReader::new(file).await.unwrap();
 //!
-//!     let (width, height) = reader.dimensions().await.unwrap();
-//!     let layout = reader.chunk_layout().await.unwrap();
+//!     // Metadata access is synchronous — no .await needed
+//!     let (width, height) = reader.dimensions().unwrap();
+//!     let layout = reader.chunk_layout().unwrap();
 //!
-//!     // Read individual chunks (tiles or strips)
+//!     // Only pixel I/O is async
 //!     let pixels = reader.read_chunk(&layout, 0).await.unwrap();
-//!
-//!     // Or read the entire image
 //!     let image = reader.read_image(&layout).await.unwrap();
 //! });
 //! ```
@@ -72,25 +75,23 @@ use ifd::Ifd;
 ///
 /// # Typical workflow
 ///
-/// 1. Create a reader with [`TiffReader::new`] (reads header + first IFD).
+/// 1. Create a reader with [`TiffReader::new`] (async — reads header + IFD + resolves all tags).
 /// 2. Query metadata with [`find_tag`](TiffReader::find_tag) or
-///    [`dimensions`](TiffReader::dimensions).
-/// 3. Compute the chunk layout once with [`chunk_layout`](TiffReader::chunk_layout).
-/// 4. Read pixel data with [`read_chunk`](TiffReader::read_chunk) (individual chunks)
-///    or [`read_image`](TiffReader::read_image) (full image).
+///    [`dimensions`](TiffReader::dimensions) (sync — just HashMap lookups).
+/// 3. Compute the chunk layout once with [`chunk_layout`](TiffReader::chunk_layout) (sync).
+/// 4. Read pixel data with [`read_chunk`](TiffReader::read_chunk) (async — reads from file)
+///    or [`read_image`](TiffReader::read_image) (async).
 pub struct TiffReader<R> {
     reader: R,
-    byte_order: ByteOrder,
     ifd: Ifd,
 }
 
 impl<R: AsyncReadAt> TiffReader<R> {
     /// Open a TIFF file by reading the 8-byte header and parsing the first IFD.
     ///
-    /// This performs two or three positional reads:
-    /// 1. 8 bytes at offset 0 for the header (byte order, magic number, IFD offset).
-    /// 2. 2 bytes at the IFD offset for the entry count.
-    /// 3. `N * 12` bytes for the IFD entries + 4 bytes for the next IFD pointer.
+    /// This eagerly resolves **all** tag values: inline values are decoded from
+    /// the IFD entries, and out-of-line values are fetched via positional reads.
+    /// After construction, all metadata accessors are synchronous.
     ///
     /// # Errors
     ///
@@ -100,25 +101,20 @@ impl<R: AsyncReadAt> TiffReader<R> {
         let header_buf = read_exact_at(&reader, 0, 8).await?;
         let (byte_order, ifd_offset) = header::parse_header(&header_buf)?;
         let ifd = ifd::read_ifd(&reader, byte_order, ifd_offset).await?;
-        Ok(Self {
-            reader,
-            byte_order,
-            ifd,
-        })
+        Ok(Self { reader, ifd })
     }
 
     /// Look up a tag by its numeric ID.
     ///
     /// Tag IDs are defined as constants in the [`tag`] module (e.g., [`tag::IMAGE_WIDTH`]).
     ///
-    /// If the tag's data fits in 4 bytes, it is decoded inline from the IFD entry.
-    /// Otherwise, a positional read is issued to fetch the out-of-line data.
+    /// This is a synchronous `HashMap` lookup — all tag values were resolved
+    /// eagerly during [`TiffReader::new`]. Returns a clone of the tag value
+    /// so it can be consumed by `into_*` conversion methods.
     ///
-    /// Returns `Ok(None)` if the tag is not present in the IFD.
-    pub async fn find_tag(&self, tag_id: u16) -> Result<Option<TagValue>, TiffError> {
-        self.ifd
-            .resolve_tag(&self.reader, self.byte_order, tag_id)
-            .await
+    /// Returns `None` if the tag is not present in the IFD.
+    pub fn find_tag(&self, tag_id: u16) -> Option<TagValue> {
+        self.ifd.tags.get(&tag_id).cloned()
     }
 
     /// Returns the image dimensions as `(width, height)` in pixels.
@@ -128,15 +124,13 @@ impl<R: AsyncReadAt> TiffReader<R> {
     /// # Errors
     ///
     /// Returns [`TiffError::Format`] if either tag is missing.
-    pub async fn dimensions(&self) -> Result<(u32, u32), TiffError> {
+    pub fn dimensions(&self) -> Result<(u32, u32), TiffError> {
         let width = self
             .find_tag(tag::IMAGE_WIDTH)
-            .await?
             .ok_or_else(|| TiffError::Format("missing ImageWidth tag".into()))?
             .into_u32()?;
         let height = self
             .find_tag(tag::IMAGE_LENGTH)
-            .await?
             .ok_or_else(|| TiffError::Format("missing ImageLength tag".into()))?
             .into_u32()?;
         Ok((width, height))
@@ -150,8 +144,8 @@ impl<R: AsyncReadAt> TiffReader<R> {
     ///
     /// The returned [`ChunkLayout`] should be computed once and reused for all
     /// subsequent [`read_chunk`](TiffReader::read_chunk) calls.
-    pub async fn chunk_layout(&self) -> Result<ChunkLayout, TiffError> {
-        chunk::ChunkLayout::from_reader(self).await
+    pub fn chunk_layout(&self) -> Result<ChunkLayout, TiffError> {
+        chunk::ChunkLayout::from_reader(self)
     }
 
     /// Returns the actual pixel dimensions `(width, height)` of the chunk at `idx`.
