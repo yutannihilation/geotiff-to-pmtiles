@@ -1,3 +1,4 @@
 target
 *.avif
 *.pmtiles
+.claude/settings.local.json

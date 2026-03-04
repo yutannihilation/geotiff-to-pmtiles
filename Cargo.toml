@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "tiff-compio"]
+
 [package]
 name = "geotiff-to-pmtiles"
 version = "0.0.10"
