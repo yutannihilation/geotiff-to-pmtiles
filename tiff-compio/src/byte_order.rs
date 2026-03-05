@@ -59,6 +59,24 @@ impl ByteOrder {
         }
     }
 
+    /// Write a `u16` into the first 2 bytes of `buf`.
+    pub fn write_u16(self, val: u16, buf: &mut [u8]) {
+        let bytes = match self {
+            ByteOrder::LittleEndian => val.to_le_bytes(),
+            ByteOrder::BigEndian => val.to_be_bytes(),
+        };
+        buf[..2].copy_from_slice(&bytes);
+    }
+
+    /// Write a `u32` into the first 4 bytes of `buf`.
+    pub fn write_u32(self, val: u32, buf: &mut [u8]) {
+        let bytes = match self {
+            ByteOrder::LittleEndian => val.to_le_bytes(),
+            ByteOrder::BigEndian => val.to_be_bytes(),
+        };
+        buf[..4].copy_from_slice(&bytes);
+    }
+
     /// Read an `f64` from the first 8 bytes of `buf`.
     pub fn read_f64(self, buf: &[u8]) -> f64 {
         let bytes = [

@@ -20,6 +20,7 @@
 
 use std::io::Read;
 
+use crate::byte_order::ByteOrder;
 use crate::error::TiffError;
 
 /// Decompress raw chunk bytes according to the TIFF compression type,
@@ -35,11 +36,13 @@ use crate::error::TiffError;
 /// - `bytes_per_sample` — bytes per sample component (e.g., 1 for u8, 2 for u16).
 /// - `samples_per_pixel` — number of samples (channels) per pixel.
 /// - `row_pixels` — number of pixels per row (chunk width).
+/// - `byte_order` — byte order of the TIFF file.
 ///
 /// # Errors
 ///
 /// - [`TiffError::Unsupported`] for unknown compression types or predictor values.
 /// - [`TiffError::Decompress`] if the codec fails.
+#[allow(clippy::too_many_arguments)]
 pub fn decompress(
     data: Vec<u8>,
     compression: u16,
@@ -48,6 +51,7 @@ pub fn decompress(
     bytes_per_sample: usize,
     samples_per_pixel: usize,
     row_pixels: u32,
+    byte_order: ByteOrder,
 ) -> Result<Vec<u8>, TiffError> {
     let mut decompressed = match compression {
         1 => {
@@ -76,6 +80,7 @@ pub fn decompress(
             bytes_per_sample,
             samples_per_pixel,
             row_pixels as usize,
+            byte_order,
         );
     } else if predictor > 2 {
         return Err(TiffError::Unsupported(format!(
@@ -96,6 +101,7 @@ fn apply_horizontal_predictor(
     bytes_per_sample: usize,
     samples_per_pixel: usize,
     row_pixels: usize,
+    byte_order: ByteOrder,
 ) {
     let pixel_bytes = bytes_per_sample * samples_per_pixel;
     let row_bytes = pixel_bytes * row_pixels;
@@ -106,7 +112,7 @@ fn apply_horizontal_predictor(
 
     match bytes_per_sample {
         1 => {
-            // Fast path for 8-bit samples (most common case)
+            // Fast path for 8-bit samples (most common case) — byte order irrelevant
             for row in data.chunks_exact_mut(row_bytes) {
                 for sample in 0..samples_per_pixel {
                     for i in 1..row_pixels {
@@ -118,50 +124,34 @@ fn apply_horizontal_predictor(
             }
         }
         2 => {
-            // 16-bit samples
+            // 16-bit samples — read/write in file byte order
             for row in data.chunks_exact_mut(row_bytes) {
                 for sample in 0..samples_per_pixel {
                     for i in 1..row_pixels {
                         let prev_off = (i - 1) * pixel_bytes + sample * 2;
                         let curr_off = i * pixel_bytes + sample * 2;
                         if curr_off + 1 < row.len() && prev_off + 1 < row.len() {
-                            let prev = u16::from_ne_bytes([row[prev_off], row[prev_off + 1]]);
-                            let curr = u16::from_ne_bytes([row[curr_off], row[curr_off + 1]]);
+                            let prev = byte_order.read_u16(&row[prev_off..]);
+                            let curr = byte_order.read_u16(&row[curr_off..]);
                             let result = curr.wrapping_add(prev);
-                            let bytes = result.to_ne_bytes();
-                            row[curr_off] = bytes[0];
-                            row[curr_off + 1] = bytes[1];
+                            byte_order.write_u16(result, &mut row[curr_off..]);
                         }
                     }
                 }
             }
         }
         4 => {
-            // 32-bit samples (float or int)
+            // 32-bit samples (float or int) — read/write in file byte order
             for row in data.chunks_exact_mut(row_bytes) {
                 for sample in 0..samples_per_pixel {
                     for i in 1..row_pixels {
                         let prev_off = (i - 1) * pixel_bytes + sample * 4;
                         let curr_off = i * pixel_bytes + sample * 4;
                         if curr_off + 3 < row.len() && prev_off + 3 < row.len() {
-                            let prev = u32::from_ne_bytes([
-                                row[prev_off],
-                                row[prev_off + 1],
-                                row[prev_off + 2],
-                                row[prev_off + 3],
-                            ]);
-                            let curr = u32::from_ne_bytes([
-                                row[curr_off],
-                                row[curr_off + 1],
-                                row[curr_off + 2],
-                                row[curr_off + 3],
-                            ]);
+                            let prev = byte_order.read_u32(&row[prev_off..]);
+                            let curr = byte_order.read_u32(&row[curr_off..]);
                             let result = curr.wrapping_add(prev);
-                            let bytes = result.to_ne_bytes();
-                            row[curr_off] = bytes[0];
-                            row[curr_off + 1] = bytes[1];
-                            row[curr_off + 2] = bytes[2];
-                            row[curr_off + 3] = bytes[3];
+                            byte_order.write_u32(result, &mut row[curr_off..]);
                         }
                     }
                 }
@@ -221,7 +211,7 @@ mod tests {
     #[test]
     fn test_no_compression() {
         let data = vec![1, 2, 3, 4, 5];
-        let result = decompress(data.clone(), 1, 5, 1, 1, 1, 5).unwrap();
+        let result = decompress(data.clone(), 1, 5, 1, 1, 1, 5, ByteOrder::LittleEndian).unwrap();
         assert_eq!(result, data);
     }
 
@@ -231,7 +221,7 @@ mod tests {
         let original = vec![0u8; 256];
         let mut encoder = weezl::encode::Encoder::new(weezl::BitOrder::Msb, 8);
         let compressed = encoder.encode(&original).unwrap();
-        let result = decompress(compressed, 5, 256, 1, 1, 1, 256).unwrap();
+        let result = decompress(compressed, 5, 256, 1, 1, 1, 256, ByteOrder::LittleEndian).unwrap();
         assert_eq!(result, original);
     }
 
@@ -253,6 +243,7 @@ mod tests {
             1,
             1,
             original.len() as u32,
+            ByteOrder::LittleEndian,
         )
         .unwrap();
         assert_eq!(result, original);
@@ -277,6 +268,7 @@ mod tests {
             1,
             1,
             original.len() as u32,
+            ByteOrder::LittleEndian,
         )
         .unwrap();
         assert_eq!(result, original);
@@ -284,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_unsupported_compression() {
-        let result = decompress(vec![0], 9999, 0, 1, 1, 1, 0);
+        let result = decompress(vec![0], 9999, 0, 1, 1, 1, 0, ByteOrder::LittleEndian);
         assert!(result.is_err());
     }
 
@@ -294,7 +286,7 @@ mod tests {
         // Original pixels: [10,20,30], [40,50,60], [70,80,90], [100,110,120]
         // After differencing:  [10,20,30], [30,30,30], [30,30,30], [30,30,30]
         let mut differenced = vec![10, 20, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30];
-        apply_horizontal_predictor(&mut differenced, 1, 3, 4);
+        apply_horizontal_predictor(&mut differenced, 1, 3, 4, ByteOrder::LittleEndian);
         assert_eq!(
             differenced,
             vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
@@ -305,7 +297,7 @@ mod tests {
     fn test_horizontal_predictor_single_pixel_row() {
         // Single pixel row — no differencing to undo
         let mut data = vec![42, 128, 200];
-        apply_horizontal_predictor(&mut data, 1, 3, 1);
+        apply_horizontal_predictor(&mut data, 1, 3, 1, ByteOrder::LittleEndian);
         assert_eq!(data, vec![42, 128, 200]);
     }
 }

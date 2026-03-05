@@ -32,7 +32,6 @@ pub struct ConvertOptions<'a> {
     pub min_zoom: Option<u8>,
     pub max_zoom: Option<u8>,
     pub resampling: Resampling,
-    pub cache_mb: usize,
     pub avif_quality: u8,
     pub avif_speed: u8,
 }
@@ -188,7 +187,12 @@ async fn read_chunks_async(
         // Normalize to u8
         let bits_per_sample = layout.bits_per_sample[0];
         let sample_format = layout.sample_format;
-        let data = tiff_compio::normalize::normalize_to_u8(raw, bits_per_sample, sample_format);
+        let data = tiff_compio::normalize::normalize_to_u8(
+            raw,
+            bits_per_sample,
+            sample_format,
+            readers[key.source_idx].byte_order(),
+        );
 
         let cw = cw as usize;
         let ch = ch as usize;
@@ -219,9 +223,7 @@ fn make_samplers(source_specs: &[SourceSpec]) -> Vec<SourceSampler> {
     for spec in source_specs {
         let sampler = ChunkedTiffSampler::from_layout(&spec.layout)
             .expect("ChunkedTiffSampler::from_layout should not fail for validated layouts");
-        sources.push(SourceSampler {
-            reader: sampler,
-        });
+        sources.push(SourceSampler { reader: sampler });
     }
     sources
 }
@@ -237,7 +239,6 @@ pub fn convert(
         min_zoom: min_zoom_opt,
         max_zoom: max_zoom_opt,
         resampling,
-        cache_mb: _,
         avif_quality,
         avif_speed,
     } = options;
