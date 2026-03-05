@@ -127,6 +127,7 @@ pub(crate) struct SourceMetadata {
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) georef: Georef,
+    pub(crate) gdal_nodata: Option<String>,
 }
 
 pub(crate) fn zoom_for_tile_size(required_size: f64) -> u8 {

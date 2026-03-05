@@ -423,6 +423,62 @@ async fn chunk_layout_strips() {
     assert_eq!(layout.byte_counts.len(), layout.chunk_count as usize);
 }
 
+// ============================================================================
+// GDAL extension tag tests
+// ============================================================================
+
+/// Verify GDAL_NODATA tag (42113) with value "0".
+#[compio::test]
+async fn tag_gdal_nodata_zero() {
+    let path = test_images_dir().join("gdal-nodata-0.tif");
+    if !path.exists() {
+        eprintln!("Skipping: {}", path.display());
+        return;
+    }
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let nodata = reader
+        .find_tag(tag::GDAL_NODATA)
+        .expect("GDAL_NODATA tag should be present")
+        .into_string()
+        .unwrap();
+    assert_eq!(nodata.trim(), "0");
+}
+
+/// Verify GDAL_NODATA tag (42113) with value "255".
+#[compio::test]
+async fn tag_gdal_nodata_255() {
+    let path = test_images_dir().join("gdal-nodata-255.tif");
+    if !path.exists() {
+        eprintln!("Skipping: {}", path.display());
+        return;
+    }
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let nodata = reader
+        .find_tag(tag::GDAL_NODATA)
+        .expect("GDAL_NODATA tag should be present")
+        .into_string()
+        .unwrap();
+    assert_eq!(nodata.trim(), "255");
+}
+
+/// Verify GDAL_NODATA tag is absent from files that don't have it.
+#[compio::test]
+async fn tag_gdal_nodata_absent() {
+    let path = test_images_dir().join("rgb-3c-8b.tiff");
+    if !path.exists() {
+        eprintln!("Skipping: {}", path.display());
+        return;
+    }
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    assert!(
+        reader.find_tag(tag::GDAL_NODATA).is_none(),
+        "rgb-3c-8b.tiff should not have GDAL_NODATA tag"
+    );
+}
+
 /// Verify chunk layout for a tiled image.
 #[compio::test]
 async fn chunk_layout_tiles() {

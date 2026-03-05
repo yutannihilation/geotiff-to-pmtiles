@@ -242,11 +242,33 @@ pub fn convert(
         avif_quality,
         avif_speed,
     } = options;
-    let nodata = parse_nodata(nodata)?;
+    let cli_nodata = parse_nodata(nodata)?;
 
     println!("Input args: {}; loading metadata...", input.join(" "));
     let sources_meta = crate::resample::load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
+
+    // Use CLI --nodata if provided, otherwise fall back to GDAL_NODATA tag from the first source.
+    let nodata = if cli_nodata.is_some() {
+        cli_nodata
+    } else {
+        let gdal_val = sources_meta.first().and_then(|m| m.gdal_nodata.as_deref());
+        if let Some(val) = gdal_val {
+            match parse_nodata(Some(val)) {
+                Ok(Some(spec)) => {
+                    println!("Using GDAL_NODATA value from source: {val}");
+                    Some(spec)
+                }
+                Ok(None) => None,
+                Err(_) => {
+                    eprintln!("Warning: ignoring unsupported GDAL_NODATA value: {val}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
 
     // Open all source TIFFs with compio and compute layouts once at startup.
     // compio::fs::File is !Send, so readers must stay on the main thread.
