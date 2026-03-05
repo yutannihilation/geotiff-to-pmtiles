@@ -101,7 +101,7 @@ impl GeoTransform {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NoDataSpec {
     Gray(u8),
     Rgb(u8, u8, u8),
