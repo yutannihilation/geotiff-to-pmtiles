@@ -13,7 +13,7 @@ use tiff_compio::ChunkLayout;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Georef, Pt, SourceMetadata, TILE_SIZE, parse_nodata, source_corners_merc_georef,
+    Georef, NoDataSpec, Pt, SourceMetadata, TILE_SIZE, parse_nodata, source_corners_merc_georef,
     tile_bounds_webmerc, tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
@@ -253,31 +253,36 @@ pub fn convert(
     let nodata = if cli_nodata.is_some() {
         cli_nodata
     } else {
-        let mut gdal_values: HashSet<String> = HashSet::new();
+        // Parse each source's GDAL_NODATA into a NoDataSpec so that different
+        // textual spellings of the same value (e.g. "0" vs "0.0") don't cause
+        // false conflicts.
+        let mut gdal_specs: HashSet<NoDataSpec> = HashSet::new();
         for meta in &sources_meta {
             if let Some(val) = meta.gdal_nodata.as_deref() {
                 let trimmed = val.trim();
-                if !trimmed.is_empty() {
-                    gdal_values.insert(trimmed.to_string());
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match parse_nodata(Some(trimmed)) {
+                    Ok(Some(spec)) => {
+                        gdal_specs.insert(spec);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: ignoring unsupported GDAL_NODATA value `{trimmed}`: {e}"
+                        );
+                    }
                 }
             }
         }
 
-        match gdal_values.len() {
+        match gdal_specs.len() {
             0 => None,
             1 => {
-                let val = gdal_values.into_iter().next().unwrap();
-                match parse_nodata(Some(&val)) {
-                    Ok(Some(spec)) => {
-                        println!("Using GDAL_NODATA value from source(s): {val}");
-                        Some(spec)
-                    }
-                    Ok(None) => None,
-                    Err(_) => {
-                        eprintln!("Warning: ignoring unsupported GDAL_NODATA value: {val}");
-                        None
-                    }
-                }
+                let spec = gdal_specs.into_iter().next().unwrap();
+                println!("Using GDAL_NODATA value from source(s)");
+                Some(spec)
             }
             _ => {
                 return Err(

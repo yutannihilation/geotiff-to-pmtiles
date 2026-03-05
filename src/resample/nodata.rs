@@ -96,6 +96,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_rgb_float_style_values() {
+        let parsed = parse_nodata(Some("1.0, 2.0, 3.0")).unwrap();
+        match parsed {
+            Some(NoDataSpec::Rgb(r, g, b)) => assert_eq!((r, g, b), (1, 2, 3)),
+            _ => panic!("expected rgb nodata"),
+        }
+    }
+
+    #[test]
     fn rejects_invalid_values() {
         assert!(parse_nodata(Some("1,2")).is_err());
         assert!(parse_nodata(Some("x")).is_err());
