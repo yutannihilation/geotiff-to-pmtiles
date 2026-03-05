@@ -66,6 +66,26 @@ geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
   - `nearest`: chooses nearest valid sample.
   - `bilinear`: weighted interpolation that ignores invalid/nodata neighbors.
 
+## Unsupported TIFF Features
+
+This tool targets the most common GeoTIFF configurations. The following rare
+features are intentionally unsupported to keep the codebase simple:
+
+- **Planar configuration** — Only chunky (interleaved) pixel layout
+  (`PlanarConfiguration=1`) is supported. Separate-plane TIFFs
+  (`PlanarConfiguration=2`) are rejected at load time. Most GeoTIFF writers
+  default to chunky.
+- **JPEG-in-TIFF compression** — TIFF compression 7 (JPEG) is not supported.
+  JPEG-compressed GeoTIFFs are uncommon; Deflate and LZW are the standard
+  choices for lossless GeoTIFF distribution.
+
+If you encounter one of these, convert the file beforehand with GDAL:
+
+```sh
+# Re-encode to Deflate, chunky layout
+gdal raster convert input.tif output.tif --co COMPRESS=DEFLATE --co INTERLEAVE=PIXEL
+```
+
 ## Development Utilities
 
 Generate benchmark GeoTIFF/world-file fixtures with:

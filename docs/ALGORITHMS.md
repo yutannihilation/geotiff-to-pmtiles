@@ -52,3 +52,8 @@ CRS is read from `GeoKeyDirectoryTag`; when missing, `--src-crs` is required.
 - RGB triplet (`255,255,255`)
 
 Matched nodata pixels are treated as transparent (`alpha=0`) and excluded from interpolation.
+
+## Unsupported Features
+
+- **Planar TIFF** (`PlanarConfiguration=2`): rejected at load time. Only chunky/interleaved layout is supported.
+- **JPEG-in-TIFF** (compression 7): not implemented. Use Deflate or LZW compressed inputs instead.
