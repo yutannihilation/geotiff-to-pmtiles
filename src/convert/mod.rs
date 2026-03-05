@@ -19,7 +19,7 @@ use crate::resample::{
 
 use self::cache::{ChunkData, ChunkKey};
 use self::render::render_tile_chunked;
-use self::source::{ChunkedTiffSampler, SourceReader, SourceSampler};
+use self::source::{ChunkedTiffSampler, SourceSampler};
 
 /// Default batch size for tile processing. Controls memory: each batch pre-loads
 /// all needed TIFF chunks before rendering.
@@ -38,18 +38,16 @@ pub struct ConvertOptions<'a> {
 }
 
 struct SourceSpec {
-    path: std::path::PathBuf,
     width: usize,
     height: usize,
     georef: Georef,
-    /// Pre-computed chunk layout (None if chunked mode not supported for this source).
-    layout: Option<ChunkLayout>,
+    /// Pre-computed chunk layout.
+    layout: ChunkLayout,
 }
 
 impl SourceSpec {
-    fn from_meta(meta: SourceMetadata, layout: Option<ChunkLayout>) -> Self {
+    fn from_meta(meta: SourceMetadata, layout: ChunkLayout) -> Self {
         Self {
-            path: meta.path,
             width: meta.width,
             height: meta.height,
             georef: meta.georef,
@@ -141,23 +139,22 @@ fn compute_chunk_requirements(
         max_ry = (max_ry + 1.0).min(spec.height as f64);
 
         // Map pixel bbox to chunk indices
-        if let Some(layout) = &spec.layout {
-            let cw = layout.chunk_width as f64;
-            let ch = layout.chunk_height as f64;
-            let cx_min = (min_rx / cw).floor() as u32;
-            let cx_max = (max_rx / cw).floor().min(layout.chunks_across as f64 - 1.0) as u32;
-            let cy_min = (min_ry / ch).floor() as u32;
-            let cy_max = (max_ry / ch).floor().min(layout.chunks_down as f64 - 1.0) as u32;
+        let layout = &spec.layout;
+        let cw = layout.chunk_width as f64;
+        let ch = layout.chunk_height as f64;
+        let cx_min = (min_rx / cw).floor() as u32;
+        let cx_max = (max_rx / cw).floor().min(layout.chunks_across as f64 - 1.0) as u32;
+        let cy_min = (min_ry / ch).floor() as u32;
+        let cy_max = (max_ry / ch).floor().min(layout.chunks_down as f64 - 1.0) as u32;
 
-            for cy in cy_min..=cy_max {
-                for cx in cx_min..=cx_max {
-                    let chunk_idx = cy * layout.chunks_across + cx;
-                    if chunk_idx < layout.chunk_count {
-                        needed_chunks.insert(ChunkKey {
-                            source_idx,
-                            chunk_idx,
-                        });
-                    }
+        for cy in cy_min..=cy_max {
+            for cx in cx_min..=cx_max {
+                let chunk_idx = cy * layout.chunks_across + cx;
+                if chunk_idx < layout.chunk_count {
+                    needed_chunks.insert(ChunkKey {
+                        source_idx,
+                        chunk_idx,
+                    });
                 }
             }
         }
@@ -174,7 +171,7 @@ fn compute_chunk_requirements(
 async fn read_chunks_async(
     needed_chunks: &HashSet<ChunkKey>,
     readers: &[tiff_compio::TiffReader<compio::fs::File>],
-    layouts: &[Option<ChunkLayout>],
+    layouts: &[ChunkLayout],
 ) -> Result<HashMap<ChunkKey, ChunkData>, Box<dyn std::error::Error>> {
     if needed_chunks.is_empty() {
         return Ok(HashMap::new());
@@ -182,9 +179,7 @@ async fn read_chunks_async(
 
     let mut chunk_map = HashMap::with_capacity(needed_chunks.len());
     for key in needed_chunks {
-        let layout = layouts[key.source_idx]
-            .as_ref()
-            .expect("chunk requested for source without layout");
+        let layout = &layouts[key.source_idx];
         let raw = readers[key.source_idx]
             .read_chunk(layout, key.chunk_idx)
             .await?;
@@ -222,17 +217,10 @@ async fn read_chunks_async(
 fn make_samplers(source_specs: &[SourceSpec]) -> Vec<SourceSampler> {
     let mut sources = Vec::with_capacity(source_specs.len());
     for spec in source_specs {
-        let reader = if let Some(layout) = &spec.layout {
-            match ChunkedTiffSampler::from_layout(layout) {
-                Ok(sampler) => SourceReader::Chunked(Box::new(sampler)),
-                Err(_) => SourceReader::FullDeferred(None),
-            }
-        } else {
-            SourceReader::FullDeferred(None)
-        };
+        let sampler = ChunkedTiffSampler::from_layout(&spec.layout)
+            .expect("ChunkedTiffSampler::from_layout should not fail for validated layouts");
         sources.push(SourceSampler {
-            path: spec.path.clone(),
-            reader,
+            reader: sampler,
         });
     }
     sources
@@ -466,16 +454,9 @@ pub fn convert(
             .map_init(
                 || make_samplers(&source_specs),
                 |sources, (job, selected)| {
-                    let active_sources: Vec<bool> = (0..sources.len())
-                        .map(|i| selected.iter().any(|(si, _)| *si == i))
-                        .collect();
-
                     let result =
                         render_tile_chunked(sources, selected, resampling, nodata, &chunk_map)
                             .and_then(|rgba| {
-                                for (i, source) in sources.iter_mut().enumerate() {
-                                    source.release_if_inactive(active_sources[i]);
-                                }
                                 if rgba.chunks_exact(4).all(|px| px[3] == 0) {
                                     return Ok(None);
                                 }
@@ -565,7 +546,7 @@ pub fn convert(
 /// Open all source TIFFs as compio TiffReaders and compute their chunk layouts.
 type SourceReaders = (
     Vec<tiff_compio::TiffReader<compio::fs::File>>,
-    Vec<Option<ChunkLayout>>,
+    Vec<ChunkLayout>,
 );
 
 fn open_sources(
@@ -581,22 +562,26 @@ fn open_sources(
             tiff_compio::TiffReader::new(file).await
         })?;
 
-        let layout = match reader.chunk_layout() {
-            Ok(layout) => {
-                // Check planar configuration — only chunky is supported
-                let planar = reader
-                    .find_tag(tiff_compio::tag::PLANAR_CONFIGURATION)
-                    .map(|v: tiff_compio::TagValue| v.into_u16())
-                    .transpose()?
-                    .unwrap_or(1);
-                if planar == 2 {
-                    None // Fall back to full raster for planar TIFFs
-                } else {
-                    Some(layout)
-                }
-            }
-            Err(_) => None,
-        };
+        let layout = reader.chunk_layout().map_err(|e| {
+            format!(
+                "{}: unsupported TIFF layout (no valid chunk layout): {e}",
+                path.display()
+            )
+        })?;
+
+        // Check planar configuration — only chunky is supported
+        let planar = reader
+            .find_tag(tiff_compio::tag::PLANAR_CONFIGURATION)
+            .map(|v: tiff_compio::TagValue| v.into_u16())
+            .transpose()?
+            .unwrap_or(1);
+        if planar == 2 {
+            return Err(format!(
+                "{}: planar TIFF configuration is not supported",
+                path.display()
+            )
+            .into());
+        }
 
         readers.push(reader);
         layouts.push(layout);
