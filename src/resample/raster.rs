@@ -61,6 +61,7 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
                     chunk_raw,
                     bits_per_sample,
                     sample_format,
+                    layout.byte_order,
                 );
                 let cw = cw as usize;
                 let ch = ch as usize;
@@ -98,7 +99,12 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
     }
 
     let image_raw = rt.block_on(reader.read_image(&layout))?;
-    let data = tiff_compio::normalize::normalize_to_u8(image_raw, bits_per_sample, sample_format);
+    let data = tiff_compio::normalize::normalize_to_u8(
+        image_raw,
+        bits_per_sample,
+        sample_format,
+        layout.byte_order,
+    );
 
     let pixel_count = width.saturating_mul(height);
     let derived_stride = if pixel_count == 0 {

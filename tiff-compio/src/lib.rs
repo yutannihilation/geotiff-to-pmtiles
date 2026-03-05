@@ -85,6 +85,7 @@ use ifd::Ifd;
 pub struct TiffReader<R> {
     reader: R,
     ifd: Ifd,
+    byte_order: ByteOrder,
 }
 
 impl<R: AsyncReadAt> TiffReader<R> {
@@ -102,7 +103,11 @@ impl<R: AsyncReadAt> TiffReader<R> {
         let header_buf = read_exact_at(&reader, 0, 8).await?;
         let (byte_order, ifd_offset) = header::parse_header(&header_buf)?;
         let ifd = ifd::read_ifd(&reader, byte_order, ifd_offset).await?;
-        Ok(Self { reader, ifd })
+        Ok(Self {
+            reader,
+            ifd,
+            byte_order,
+        })
     }
 
     /// Look up a tag by its numeric ID.
@@ -116,6 +121,11 @@ impl<R: AsyncReadAt> TiffReader<R> {
     /// Returns `None` if the tag is not present in the IFD.
     pub fn find_tag(&self, tag_id: u16) -> Option<TagValue> {
         self.ifd.tags.get(&tag_id).cloned()
+    }
+
+    /// Returns the byte order of this TIFF file (`II` = little-endian, `MM` = big-endian).
+    pub fn byte_order(&self) -> ByteOrder {
+        self.byte_order
     }
 
     /// Returns the image dimensions as `(width, height)` in pixels.
@@ -195,6 +205,7 @@ impl<R: AsyncReadAt> TiffReader<R> {
             bytes_per_sample(&layout.bits_per_sample),
             layout.samples_per_pixel as usize,
             layout.chunk_width,
+            layout.byte_order,
         )
     }
 

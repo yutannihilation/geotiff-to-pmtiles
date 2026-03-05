@@ -25,14 +25,12 @@ use self::source::{ChunkedTiffSampler, SourceReader, SourceSampler};
 /// all needed TIFF chunks before rendering.
 const BATCH_SIZE: usize = 256;
 
-#[allow(dead_code)]
 pub struct ConvertOptions<'a> {
     pub src_crs: Option<&'a str>,
     pub nodata: Option<&'a str>,
     pub min_zoom: Option<u8>,
     pub max_zoom: Option<u8>,
     pub resampling: Resampling,
-    pub cache_mb: usize,
     pub avif_quality: u8,
     pub avif_speed: u8,
 }
@@ -193,7 +191,12 @@ async fn read_chunks_async(
         // Normalize to u8
         let bits_per_sample = layout.bits_per_sample[0];
         let sample_format = layout.sample_format;
-        let data = tiff_compio::normalize::normalize_to_u8(raw, bits_per_sample, sample_format);
+        let data = tiff_compio::normalize::normalize_to_u8(
+            raw,
+            bits_per_sample,
+            sample_format,
+            layout.byte_order,
+        );
 
         let cw = cw as usize;
         let ch = ch as usize;
@@ -249,7 +252,6 @@ pub fn convert(
         min_zoom: min_zoom_opt,
         max_zoom: max_zoom_opt,
         resampling,
-        cache_mb: _,
         avif_quality,
         avif_speed,
     } = options;
