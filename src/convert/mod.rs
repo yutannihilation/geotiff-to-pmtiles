@@ -248,25 +248,43 @@ pub fn convert(
     let sources_meta = crate::resample::load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
 
-    // Use CLI --nodata if provided, otherwise fall back to GDAL_NODATA tag from the first source.
+    // Use CLI --nodata if provided, otherwise fall back to GDAL_NODATA tags
+    // (only when all sources agree on a single value).
     let nodata = if cli_nodata.is_some() {
         cli_nodata
     } else {
-        let gdal_val = sources_meta.first().and_then(|m| m.gdal_nodata.as_deref());
-        if let Some(val) = gdal_val {
-            match parse_nodata(Some(val)) {
-                Ok(Some(spec)) => {
-                    println!("Using GDAL_NODATA value from source: {val}");
-                    Some(spec)
-                }
-                Ok(None) => None,
-                Err(_) => {
-                    eprintln!("Warning: ignoring unsupported GDAL_NODATA value: {val}");
-                    None
+        let mut gdal_values: HashSet<String> = HashSet::new();
+        for meta in &sources_meta {
+            if let Some(val) = meta.gdal_nodata.as_deref() {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    gdal_values.insert(trimmed.to_string());
                 }
             }
-        } else {
-            None
+        }
+
+        match gdal_values.len() {
+            0 => None,
+            1 => {
+                let val = gdal_values.into_iter().next().unwrap();
+                match parse_nodata(Some(&val)) {
+                    Ok(Some(spec)) => {
+                        println!("Using GDAL_NODATA value from source(s): {val}");
+                        Some(spec)
+                    }
+                    Ok(None) => None,
+                    Err(_) => {
+                        eprintln!("Warning: ignoring unsupported GDAL_NODATA value: {val}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                return Err(
+                    "conflicting GDAL_NODATA values across input sources; please specify --nodata"
+                        .into(),
+                );
+            }
         }
     };
 

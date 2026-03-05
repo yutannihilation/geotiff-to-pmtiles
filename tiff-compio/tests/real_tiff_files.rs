@@ -466,7 +466,7 @@ async fn tag_gdal_nodata_255() {
 /// Verify GDAL_NODATA tag is absent from files that don't have it.
 #[compio::test]
 async fn tag_gdal_nodata_absent() {
-    let path = test_images_dir().join("rgb-3c-8b.tiff");
+    let path = test_images_dir().join("gdal-no-nodata.tif");
     if !path.exists() {
         eprintln!("Skipping: {}", path.display());
         return;
@@ -475,7 +475,7 @@ async fn tag_gdal_nodata_absent() {
     let reader = TiffReader::new(file).await.unwrap();
     assert!(
         reader.find_tag(tag::GDAL_NODATA).is_none(),
-        "rgb-3c-8b.tiff should not have GDAL_NODATA tag"
+        "gdal-no-nodata.tif should not have GDAL_NODATA tag"
     );
 }
 

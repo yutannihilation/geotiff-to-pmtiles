@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rayon::prelude::*;
 
-use super::{SourceMetadata, read_georef};
+use super::{SourceMetadata, read_source_metadata};
 
 fn has_glob_meta(arg: &str) -> bool {
     arg.chars().any(|c| matches!(c, '*' | '?' | '[' | ']'))
@@ -57,49 +57,13 @@ pub(crate) fn load_source_metadata(
 ) -> Result<Vec<SourceMetadata>, Box<dyn std::error::Error>> {
     let paths = resolve_input_paths(input)?;
     let sources = paths
-        .par_iter()
+        .into_par_iter()
         .map(|path| -> Result<SourceMetadata, String> {
-            let (width, height) = raster_dimensions(path.as_path())
-                .map_err(|e| format!("failed to read raster size '{}': {e}", path.display()))?;
-            let georef = read_georef(path.as_path(), src_crs)
-                .map_err(|e| format!("failed to read georef '{}': {e}", path.display()))?;
-            let gdal_nodata = read_gdal_nodata(path.as_path())
-                .map_err(|e| format!("failed to read GDAL nodata '{}': {e}", path.display()))?;
-            Ok(SourceMetadata {
-                path: path.clone(),
-                width,
-                height,
-                georef,
-                gdal_nodata,
-            })
+            read_source_metadata(path, src_crs).map_err(|e| format!("failed to read metadata: {e}"))
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     Ok(sources)
-}
-
-fn raster_dimensions(path: &std::path::Path) -> Result<(usize, usize), Box<dyn std::error::Error>> {
-    let rt = compio::runtime::Runtime::new()?;
-    let (w, h) = rt.block_on(async {
-        let file = compio::fs::File::open(path).await?;
-        let reader = tiff_compio::TiffReader::new(file).await?;
-        reader.dimensions()
-    })?;
-    Ok((w as usize, h as usize))
-}
-
-fn read_gdal_nodata(path: &std::path::Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let rt = compio::runtime::Runtime::new()?;
-    let nodata = rt.block_on(async {
-        let file = compio::fs::File::open(path).await?;
-        let reader = tiff_compio::TiffReader::new(file).await?;
-        let value = reader
-            .find_tag(tiff_compio::tag::GDAL_NODATA)
-            .map(|v| v.into_string())
-            .transpose()?;
-        Ok::<_, Box<dyn std::error::Error>>(value)
-    })?;
-    Ok(nodata)
 }
 
 #[cfg(test)]
@@ -162,37 +126,30 @@ mod tests {
             .join("images")
     }
 
-    #[test]
-    fn read_gdal_nodata_returns_value() {
-        let path = tiff_compio_images_dir().join("gdal-nodata-0.tif");
+    fn assert_gdal_nodata(filename: &str, src_crs: Option<&str>, expected: Option<&str>) {
+        let path = tiff_compio_images_dir().join(filename);
         if !path.exists() {
             eprintln!("Skipping: {}", path.display());
             return;
         }
-        let nodata = read_gdal_nodata(&path).expect("read_gdal_nodata should succeed");
-        assert_eq!(nodata.as_deref().map(str::trim), Some("0"));
+        let meta =
+            read_source_metadata(path, src_crs).expect("read_source_metadata should succeed");
+        assert_eq!(meta.gdal_nodata.as_deref().map(str::trim), expected);
     }
 
     #[test]
-    fn read_gdal_nodata_returns_255() {
-        let path = tiff_compio_images_dir().join("gdal-nodata-255.tif");
-        if !path.exists() {
-            eprintln!("Skipping: {}", path.display());
-            return;
-        }
-        let nodata = read_gdal_nodata(&path).expect("read_gdal_nodata should succeed");
-        assert_eq!(nodata.as_deref().map(str::trim), Some("255"));
+    fn read_source_metadata_gdal_nodata_0() {
+        assert_gdal_nodata("gdal-nodata-0.tif", Some("EPSG:3857"), Some("0"));
     }
 
     #[test]
-    fn read_gdal_nodata_returns_none_when_absent() {
-        let path = tiff_compio_images_dir().join("rgb-3c-8b.tiff");
-        if !path.exists() {
-            eprintln!("Skipping: {}", path.display());
-            return;
-        }
-        let nodata = read_gdal_nodata(&path).expect("read_gdal_nodata should succeed");
-        assert!(nodata.is_none());
+    fn read_source_metadata_gdal_nodata_255() {
+        assert_gdal_nodata("gdal-nodata-255.tif", Some("EPSG:3857"), Some("255"));
+    }
+
+    #[test]
+    fn read_source_metadata_gdal_nodata_absent() {
+        assert_gdal_nodata("gdal-no-nodata.tif", None, None);
     }
 
     #[test]
