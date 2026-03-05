@@ -1,18 +1,9 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use super::cache::{ChunkData, ChunkKey};
 
-pub(super) enum SourceReader {
-    /// Chunked sampling from pre-loaded chunk data (no decoder needed).
-    Chunked(Box<ChunkedTiffSampler>),
-    /// Fallback: full raster loaded lazily on first access.
-    FullDeferred(Option<crate::resample::Raster>),
-}
-
 pub(super) struct SourceSampler {
-    pub(super) path: PathBuf,
-    pub(super) reader: SourceReader,
+    pub(super) reader: ChunkedTiffSampler,
 }
 
 /// Layout-only metadata for chunked TIFF sampling.
@@ -31,11 +22,6 @@ impl ChunkedTiffSampler {
     pub(super) fn from_layout(
         layout: &tiff_compio::ChunkLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let planar_config = 1u16; // We only support chunky (interleaved) for chunked sampling
-        if planar_config == 2 {
-            return Err("planar TIFF is not supported for chunked sampling".into());
-        }
-
         let chunk_w = layout.chunk_width as usize;
         let chunk_h = layout.chunk_height as usize;
         if chunk_w == 0 || chunk_h == 0 {
@@ -115,82 +101,16 @@ impl SourceSampler {
         yi: isize,
         chunk_map: &HashMap<ChunkKey, ChunkData>,
     ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
-        match &mut self.reader {
-            SourceReader::Chunked(s) => {
-                let Some((chunk_idx, lx, ly)) = s.chunk_and_local(xi, yi) else {
-                    return Ok(None);
-                };
-                let key = ChunkKey {
-                    source_idx,
-                    chunk_idx,
-                };
-                // Look up from pre-loaded chunk map (pure CPU, no I/O)
-                Ok(chunk_map
-                    .get(&key)
-                    .and_then(|chunk| pixel_from_chunk(chunk, lx, ly)))
-            }
-            SourceReader::FullDeferred(raster_opt) => {
-                // Fallback path for TIFF layouts that are not chunk-sampled: lazily load full
-                // raster only when this source is first touched.
-                if raster_opt.is_none() {
-                    *raster_opt = Some(crate::resample::load_raster(self.path.as_path())?);
-                }
-                Ok(raster_opt
-                    .as_ref()
-                    .and_then(|raster| sample_pixel_raster_opt(raster, xi, yi)))
-            }
-        }
+        let Some((chunk_idx, lx, ly)) = self.reader.chunk_and_local(xi, yi) else {
+            return Ok(None);
+        };
+        let key = ChunkKey {
+            source_idx,
+            chunk_idx,
+        };
+        // Look up from pre-loaded chunk map (pure CPU, no I/O)
+        Ok(chunk_map
+            .get(&key)
+            .and_then(|chunk| pixel_from_chunk(chunk, lx, ly)))
     }
-
-    pub(super) fn release_if_inactive(&mut self, active: bool) {
-        if active {
-            return;
-        }
-        match &mut self.reader {
-            SourceReader::Chunked(_) => {}
-            SourceReader::FullDeferred(r) => *r = None,
-        }
-    }
-}
-
-fn sample_pixel_raster_opt(
-    raster: &crate::resample::Raster,
-    xi: isize,
-    yi: isize,
-) -> Option<[u8; 4]> {
-    // Shared pixel extraction helper for deferred full-raster fallback sampling.
-    if xi < 0 || yi < 0 || xi >= raster.width as isize || yi >= raster.height as isize {
-        return None;
-    }
-    let xi = xi as usize;
-    let yi = yi as usize;
-    let pixel_index = yi * raster.width + xi;
-    let base = pixel_index.saturating_mul(raster.stride);
-    if base >= raster.data.len() {
-        return None;
-    }
-    let out = match raster.stride {
-        0 => [0, 0, 0, 0],
-        1 => {
-            let g = raster.data[base];
-            [g, g, g, 255]
-        }
-        2 => {
-            let g = raster.data[base];
-            let a = *raster.data.get(base + 1).unwrap_or(&255);
-            [g, g, g, a]
-        }
-        _ => {
-            let r = raster.data[base];
-            let g = *raster.data.get(base + 1).unwrap_or(&r);
-            let b = *raster.data.get(base + 2).unwrap_or(&r);
-            let a = if raster.stride >= 4 {
-                *raster.data.get(base + 3).unwrap_or(&255)
-            } else {
-                255
-            };
-            [r, g, b, a]
-        }
-    };
-    Some(out)
 }

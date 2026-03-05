@@ -36,6 +36,7 @@ use crate::error::TiffError;
 /// - `bytes_per_sample` — bytes per sample component (e.g., 1 for u8, 2 for u16).
 /// - `samples_per_pixel` — number of samples (channels) per pixel.
 /// - `row_pixels` — number of pixels per row (chunk width).
+/// - `byte_order` — byte order of the TIFF file.
 ///
 /// # Errors
 ///

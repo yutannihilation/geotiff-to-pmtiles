@@ -101,13 +101,6 @@ impl GeoTransform {
     }
 }
 
-pub(crate) struct Raster {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
-    pub(crate) stride: usize,
-    pub(crate) data: Vec<u8>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum NoDataSpec {
     Gray(u8),
