@@ -1,7 +1,16 @@
 use proj_lite::Proj;
-use tiff_compio::tag;
+use tiff::decoder::Decoder;
+use tiff::tags::Tag;
 
 use super::{GeoTransform, Georef, Pt};
+
+// Well-known TIFF/GeoTIFF tag IDs not defined in the `tiff` crate.
+pub(crate) const TAG_PLANAR_CONFIGURATION: Tag = Tag::Unknown(284);
+const TAG_MODEL_PIXEL_SCALE: Tag = Tag::Unknown(33550);
+const TAG_MODEL_TIEPOINT: Tag = Tag::Unknown(33922);
+const TAG_MODEL_TRANSFORMATION: Tag = Tag::Unknown(34264);
+const TAG_GEO_KEY_DIRECTORY: Tag = Tag::Unknown(34735);
+const TAG_GDAL_NODATA: Tag = Tag::Unknown(42113);
 
 pub(crate) fn source_corners_merc_georef(
     georef: &Georef,
@@ -67,20 +76,14 @@ pub(crate) fn read_source_metadata(
     path: std::path::PathBuf,
     src_crs: Option<&str>,
 ) -> Result<super::SourceMetadata, Box<dyn std::error::Error>> {
-    let rt = compio::runtime::Runtime::new()?;
-    let reader = rt.block_on(async {
-        let file = compio::fs::File::open(&path).await?;
-        tiff_compio::TiffReader::new(file).await
-    })?;
+    let file = std::fs::File::open(&path)?;
+    let mut decoder = Decoder::new(std::io::BufReader::new(file))?;
 
-    let (w, h) = reader.dimensions()?;
+    let (w, h) = decoder.dimensions()?;
 
-    let gdal_nodata = reader
-        .find_tag(tag::GDAL_NODATA)
-        .map(|v| v.into_string())
-        .transpose()?;
+    let gdal_nodata = decoder.get_tag_ascii_string(TAG_GDAL_NODATA).ok();
 
-    let georef = read_georef_from_reader(&reader, src_crs, &path)?;
+    let georef = read_georef_from_decoder(&mut decoder, src_crs, &path)?;
 
     Ok(super::SourceMetadata {
         path,
@@ -91,15 +94,16 @@ pub(crate) fn read_source_metadata(
     })
 }
 
-fn read_georef_from_reader(
-    reader: &tiff_compio::TiffReader<compio::fs::File>,
+fn read_georef_from_decoder<R: std::io::Read + std::io::Seek>(
+    decoder: &mut Decoder<R>,
     src_crs: Option<&str>,
     path: &std::path::Path,
 ) -> Result<Georef, Box<dyn std::error::Error>> {
-    let geokey_directory: Option<Vec<u16>> = reader
-        .find_tag(tag::GEO_KEY_DIRECTORY)
-        .map(|value| value.into_u16_vec())
-        .transpose()?;
+    let geokey_directory: Option<Vec<u16>> = decoder
+        .get_tag_u32_vec(TAG_GEO_KEY_DIRECTORY)
+        .ok()
+        .map(|v| v.iter().map(|&x| x as u16).collect());
+
     let (source_crs, raster_type) = if let Some(geokey_directory) = geokey_directory.as_deref() {
         (
             format!("EPSG:{}", source_epsg_from_geokeys(geokey_directory)?),
@@ -114,11 +118,13 @@ fn read_georef_from_reader(
 
     let mut used_tfw = false;
     // Prefer explicit GeoTIFF transform tags, then fallback to adjacent world file.
-    let forward = if let Some(matrix) = reader
-        .find_tag(tag::MODEL_TRANSFORMATION)
-        .map(|value: tiff_compio::TagValue| value.into_f64_vec())
-        .transpose()?
-    {
+
+    let model_transformation: Option<Vec<f64>> =
+        decoder.get_tag_f64_vec(TAG_MODEL_TRANSFORMATION).ok();
+    let pixel_scale: Option<Vec<f64>> = decoder.get_tag_f64_vec(TAG_MODEL_PIXEL_SCALE).ok();
+    let tie_points: Option<Vec<f64>> = decoder.get_tag_f64_vec(TAG_MODEL_TIEPOINT).ok();
+
+    let forward = if let Some(matrix) = model_transformation {
         if matrix.len() < 16 {
             return Err("ModelTransformationTag must contain 16 values".into());
         }
@@ -130,16 +136,7 @@ fn read_georef_from_reader(
             t4: matrix[5],
             t5: matrix[7],
         }
-    } else if let (Some(pixel_scale), Some(tie_points)) = (
-        reader
-            .find_tag(tag::MODEL_PIXEL_SCALE)
-            .map(|value: tiff_compio::TagValue| value.into_f64_vec())
-            .transpose()?,
-        reader
-            .find_tag(tag::MODEL_TIEPOINT)
-            .map(|value: tiff_compio::TagValue| value.into_f64_vec())
-            .transpose()?,
-    ) {
+    } else if let (Some(pixel_scale), Some(tie_points)) = (pixel_scale, tie_points) {
         if pixel_scale.len() < 2 {
             return Err("ModelPixelScaleTag must contain at least two values".into());
         }

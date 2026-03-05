@@ -120,16 +120,14 @@ mod tests {
         fs::remove_dir_all(dir).expect("cleanup");
     }
 
-    /// Path to tiff-compio test images (shared workspace).
-    fn tiff_compio_images_dir() -> PathBuf {
+    fn test_fixtures_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tiff-compio")
             .join("tests")
-            .join("images")
+            .join("fixtures")
     }
 
     fn assert_gdal_nodata(filename: &str, src_crs: Option<&str>, expected: Option<&str>) {
-        let path = tiff_compio_images_dir().join(filename);
+        let path = test_fixtures_dir().join(filename);
         assert!(path.exists(), "fixture missing: {}", path.display());
         let meta =
             read_source_metadata(path, src_crs).expect("read_source_metadata should succeed");

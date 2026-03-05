@@ -4,22 +4,25 @@ mod source;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::io::BufReader;
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
 use rayon::prelude::*;
-use tiff_compio::ChunkLayout;
+use tiff::decoder::Decoder;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Georef, NoDataSpec, Pt, SourceMetadata, TILE_SIZE, parse_nodata, source_corners_merc_georef,
-    tile_bounds_webmerc, tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
+    Georef, NoDataSpec, Pt, SourceMetadata, TAG_PLANAR_CONFIGURATION, TILE_SIZE, parse_nodata,
+    source_corners_merc_georef, tile_bounds_webmerc, tile_corners_in_georef_raster,
+    webmerc_to_tile, zoom_for_tile_size,
 };
 
 use self::cache::{ChunkData, ChunkKey};
 use self::render::render_tile_chunked;
-use self::source::{ChunkedTiffSampler, SourceSampler};
+use self::source::{ChunkLayout, ChunkedTiffSampler, SourceSampler, normalize_decoding_result};
 
 /// Default batch size for tile processing. Controls memory: each batch pre-loads
 /// all needed TIFF chunks before rendering.
@@ -164,54 +167,57 @@ fn compute_chunk_requirements(
     (needed_chunks, selected_sources)
 }
 
-/// Read and decompress needed TIFF chunks via compio async I/O.
-///
-/// Must be called from a compio runtime context (inside `block_on`).
-async fn read_chunks_async(
+/// Read and decompress needed TIFF chunks synchronously via the tiff crate.
+fn read_chunks(
     needed_chunks: &HashSet<ChunkKey>,
-    readers: &[tiff_compio::TiffReader<compio::fs::File>],
+    decoders: &mut [Decoder<BufReader<File>>],
     layouts: &[ChunkLayout],
 ) -> Result<HashMap<ChunkKey, ChunkData>, Box<dyn std::error::Error>> {
     if needed_chunks.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let mut chunk_map = HashMap::with_capacity(needed_chunks.len());
+    // Group chunks by source for sequential reads per decoder
+    let mut by_source: HashMap<usize, Vec<u32>> = HashMap::new();
     for key in needed_chunks {
-        let layout = &layouts[key.source_idx];
-        let raw = readers[key.source_idx]
-            .read_chunk(layout, key.chunk_idx)
-            .await?;
-        let (cw, ch) = layout.chunk_data_dimensions(key.chunk_idx);
+        by_source
+            .entry(key.source_idx)
+            .or_default()
+            .push(key.chunk_idx);
+    }
 
-        // Normalize to u8
-        let bits_per_sample = layout.bits_per_sample[0];
-        let sample_format = layout.sample_format;
-        let data = tiff_compio::normalize::normalize_to_u8(
-            raw,
-            bits_per_sample,
-            sample_format,
-            readers[key.source_idx].byte_order(),
-        );
+    let mut chunk_map = HashMap::with_capacity(needed_chunks.len());
+    for (source_idx, chunk_indices) in &mut by_source {
+        chunk_indices.sort_unstable();
+        let layout = &layouts[*source_idx];
+        let decoder = &mut decoders[*source_idx];
 
-        let cw = cw as usize;
-        let ch = ch as usize;
-        let samples = layout.samples_per_pixel as usize;
-        let stride = if cw == 0 || ch == 0 {
-            samples.max(1)
-        } else {
-            (data.len() / (cw * ch)).max(1)
-        };
+        for &chunk_idx in chunk_indices.iter() {
+            let result = decoder.read_chunk(chunk_idx)?;
+            let data = normalize_decoding_result(result);
 
-        chunk_map.insert(
-            *key,
-            ChunkData {
-                width: cw,
-                height: ch,
-                stride,
-                data,
-            },
-        );
+            let (cw, ch) = layout.chunk_data_dimensions(chunk_idx);
+            let cw = cw as usize;
+            let ch = ch as usize;
+            let stride = if cw == 0 || ch == 0 {
+                1
+            } else {
+                (data.len() / (cw * ch)).max(1)
+            };
+
+            chunk_map.insert(
+                ChunkKey {
+                    source_idx: *source_idx,
+                    chunk_idx,
+                },
+                ChunkData {
+                    width: cw,
+                    height: ch,
+                    stride,
+                    data,
+                },
+            );
+        }
     }
 
     Ok(chunk_map)
@@ -253,9 +259,6 @@ pub fn convert(
     let nodata = if cli_nodata.is_some() {
         cli_nodata
     } else {
-        // Parse each source's GDAL_NODATA into a NoDataSpec so that different
-        // textual spellings of the same value (e.g. "0" vs "0.0") don't cause
-        // false conflicts.
         let mut gdal_specs: HashSet<NoDataSpec> = HashSet::new();
         for meta in &sources_meta {
             if let Some(val) = meta.gdal_nodata.as_deref() {
@@ -293,11 +296,9 @@ pub fn convert(
         }
     };
 
-    // Open all source TIFFs with compio and compute layouts once at startup.
-    // compio::fs::File is !Send, so readers must stay on the main thread.
+    // Open all source TIFFs and compute layouts.
     let source_paths: Vec<_> = sources_meta.iter().map(|m| m.path.clone()).collect();
-    let rt = compio::runtime::Runtime::new()?;
-    let (readers, layouts) = open_sources(&rt, &source_paths)?;
+    let (mut decoders, layouts) = open_sources(&source_paths)?;
 
     let source_specs: Vec<SourceSpec> = sources_meta
         .into_iter()
@@ -459,11 +460,8 @@ pub fn convert(
 
     // --- Batch-based pipeline ---
     //
-    // compio::fs::File is !Send (uses Rc internally), so all I/O must happen on the
-    // main thread. The pipeline processes tiles in batches:
-    //
     //   Phase 1 (main thread, CPU): Compute which TIFF chunks each tile needs
-    //   Phase 2 (main thread, compio): Read + decompress + normalize all needed chunks
+    //   Phase 2 (main thread, sync I/O): Read + decompress + normalize all needed chunks
     //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + AVIF encode
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
@@ -490,8 +488,8 @@ pub fn convert(
             })
             .collect();
 
-        // Phase 2: Read all needed chunks via compio (main thread)
-        let chunk_map = rt.block_on(read_chunks_async(&batch_chunks, &readers, &layouts))?;
+        // Phase 2: Read all needed chunks synchronously
+        let chunk_map = read_chunks(&batch_chunks, &mut decoders, &layouts)?;
 
         // Phase 3: Render tiles in parallel with rayon
         let tx = encoded_tx.clone();
@@ -589,26 +587,18 @@ pub fn convert(
     Ok(())
 }
 
-/// Open all source TIFFs as compio TiffReaders and compute their chunk layouts.
-type SourceReaders = (
-    Vec<tiff_compio::TiffReader<compio::fs::File>>,
-    Vec<ChunkLayout>,
-);
+/// Open all source TIFFs as sync Decoders and compute their chunk layouts.
+type SourceDecoders = (Vec<Decoder<BufReader<File>>>, Vec<ChunkLayout>);
 
-fn open_sources(
-    rt: &compio::runtime::Runtime,
-    paths: &[std::path::PathBuf],
-) -> Result<SourceReaders, Box<dyn std::error::Error>> {
-    let mut readers = Vec::with_capacity(paths.len());
+fn open_sources(paths: &[PathBuf]) -> Result<SourceDecoders, Box<dyn std::error::Error>> {
+    let mut decoders = Vec::with_capacity(paths.len());
     let mut layouts = Vec::with_capacity(paths.len());
 
     for path in paths {
-        let reader = rt.block_on(async {
-            let file = compio::fs::File::open(path).await?;
-            tiff_compio::TiffReader::new(file).await
-        })?;
+        let file = File::open(path)?;
+        let mut decoder = Decoder::new(BufReader::new(file))?;
 
-        let layout = reader.chunk_layout().map_err(|e| {
+        let layout = ChunkLayout::from_decoder(&mut decoder).map_err(|e| {
             format!(
                 "{}: unsupported TIFF layout (no valid chunk layout): {e}",
                 path.display()
@@ -616,10 +606,10 @@ fn open_sources(
         })?;
 
         // Check planar configuration — only chunky is supported
-        let planar = reader
-            .find_tag(tiff_compio::tag::PLANAR_CONFIGURATION)
-            .map(|v: tiff_compio::TagValue| v.into_u16())
-            .transpose()?
+        let planar = decoder
+            .get_tag_u32(TAG_PLANAR_CONFIGURATION)
+            .ok()
+            .map(|v| v as u16)
             .unwrap_or(1);
         if planar == 2 {
             return Err(format!(
@@ -629,9 +619,9 @@ fn open_sources(
             .into());
         }
 
-        readers.push(reader);
+        decoders.push(decoder);
         layouts.push(layout);
     }
 
-    Ok((readers, layouts))
+    Ok((decoders, layouts))
 }
