@@ -21,6 +21,13 @@ fn test_images_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("images")
 }
 
+/// Path to test images under `tests/images/` (e.g. GDAL-generated fixtures).
+fn test_fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("images")
+}
+
 /// Open a TIFF with the reference `tiff` crate and return (width, height, compression, chunk_type).
 fn reference_info(path: &Path) -> (u32, u32, u16) {
     let file = std::fs::File::open(path).unwrap();
@@ -421,6 +428,53 @@ async fn chunk_layout_strips() {
     assert!(layout.chunk_count > 0);
     assert_eq!(layout.offsets.len(), layout.chunk_count as usize);
     assert_eq!(layout.byte_counts.len(), layout.chunk_count as usize);
+}
+
+// ============================================================================
+// GDAL extension tag tests
+// ============================================================================
+
+/// Verify GDAL_NODATA tag (42113) with value "0".
+#[compio::test]
+async fn tag_gdal_nodata_zero() {
+    let path = test_fixtures_dir().join("gdal-nodata-0.tif");
+    assert!(path.exists(), "fixture missing: {}", path.display());
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let nodata = reader
+        .find_tag(tag::GDAL_NODATA)
+        .expect("GDAL_NODATA tag should be present")
+        .into_string()
+        .unwrap();
+    assert_eq!(nodata.trim(), "0");
+}
+
+/// Verify GDAL_NODATA tag (42113) with value "255".
+#[compio::test]
+async fn tag_gdal_nodata_255() {
+    let path = test_fixtures_dir().join("gdal-nodata-255.tif");
+    assert!(path.exists(), "fixture missing: {}", path.display());
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let nodata = reader
+        .find_tag(tag::GDAL_NODATA)
+        .expect("GDAL_NODATA tag should be present")
+        .into_string()
+        .unwrap();
+    assert_eq!(nodata.trim(), "255");
+}
+
+/// Verify GDAL_NODATA tag is absent from files that don't have it.
+#[compio::test]
+async fn tag_gdal_nodata_absent() {
+    let path = test_fixtures_dir().join("gdal-no-nodata.tif");
+    assert!(path.exists(), "fixture missing: {}", path.display());
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    assert!(
+        reader.find_tag(tag::GDAL_NODATA).is_none(),
+        "gdal-no-nodata.tif should not have GDAL_NODATA tag"
+    );
 }
 
 /// Verify chunk layout for a tiled image.

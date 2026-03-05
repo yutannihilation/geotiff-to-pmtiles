@@ -72,6 +72,11 @@ pub const MODEL_PIXEL_SCALE: u16 = 33550;
 /// When present, this tag supersedes ModelTiepoint + ModelPixelScale.
 pub const MODEL_TRANSFORMATION: u16 = 34264;
 
+// --- GDAL extension tags ---
+
+/// Tag 42113: GDAL nodata value stored as an ASCII string (e.g. `"0"` or `"255"`).
+pub const GDAL_NODATA: u16 = 42113;
+
 /// A parsed TIFF tag value.
 ///
 /// TIFF tags store typed arrays of values. This enum represents the possible types
@@ -174,6 +179,14 @@ impl TagValue {
             _ => Err(TiffError::Format(
                 "expected u32/u16 vector for u64 conversion".into(),
             )),
+        }
+    }
+
+    /// Extract the inner `String` from an [`Ascii`](TagValue::Ascii) value.
+    pub fn into_string(self) -> Result<String, TiffError> {
+        match self {
+            TagValue::Ascii(s) => Ok(s),
+            _ => Err(TiffError::Format("expected ASCII string value".into())),
         }
     }
 

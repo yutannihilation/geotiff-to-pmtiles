@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rayon::prelude::*;
 
-use super::{SourceMetadata, read_georef};
+use super::{SourceMetadata, read_source_metadata};
 
 fn has_glob_meta(arg: &str) -> bool {
     arg.chars().any(|c| matches!(c, '*' | '?' | '[' | ']'))
@@ -57,32 +57,15 @@ pub(crate) fn load_source_metadata(
 ) -> Result<Vec<SourceMetadata>, Box<dyn std::error::Error>> {
     let paths = resolve_input_paths(input)?;
     let sources = paths
-        .par_iter()
+        .into_par_iter()
         .map(|path| -> Result<SourceMetadata, String> {
-            let (width, height) = raster_dimensions(path.as_path())
-                .map_err(|e| format!("failed to read raster size '{}': {e}", path.display()))?;
-            let georef = read_georef(path.as_path(), src_crs)
-                .map_err(|e| format!("failed to read georef '{}': {e}", path.display()))?;
-            Ok(SourceMetadata {
-                path: path.clone(),
-                width,
-                height,
-                georef,
-            })
+            let path_display = path.display().to_string();
+            read_source_metadata(path, src_crs)
+                .map_err(|e| format!("failed to read metadata for {path_display}: {e}"))
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     Ok(sources)
-}
-
-fn raster_dimensions(path: &std::path::Path) -> Result<(usize, usize), Box<dyn std::error::Error>> {
-    let rt = compio::runtime::Runtime::new()?;
-    let (w, h) = rt.block_on(async {
-        let file = compio::fs::File::open(path).await?;
-        let reader = tiff_compio::TiffReader::new(file).await?;
-        reader.dimensions()
-    })?;
-    Ok((w as usize, h as usize))
 }
 
 #[cfg(test)]
@@ -135,6 +118,37 @@ mod tests {
 
         assert_eq!(out, vec![p1.clone(), p2.clone()]);
         fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// Path to tiff-compio test images (shared workspace).
+    fn tiff_compio_images_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tiff-compio")
+            .join("tests")
+            .join("images")
+    }
+
+    fn assert_gdal_nodata(filename: &str, src_crs: Option<&str>, expected: Option<&str>) {
+        let path = tiff_compio_images_dir().join(filename);
+        assert!(path.exists(), "fixture missing: {}", path.display());
+        let meta =
+            read_source_metadata(path, src_crs).expect("read_source_metadata should succeed");
+        assert_eq!(meta.gdal_nodata.as_deref().map(str::trim), expected);
+    }
+
+    #[test]
+    fn read_source_metadata_gdal_nodata_0() {
+        assert_gdal_nodata("gdal-nodata-0.tif", Some("EPSG:3857"), Some("0"));
+    }
+
+    #[test]
+    fn read_source_metadata_gdal_nodata_255() {
+        assert_gdal_nodata("gdal-nodata-255.tif", Some("EPSG:3857"), Some("255"));
+    }
+
+    #[test]
+    fn read_source_metadata_gdal_nodata_absent() {
+        assert_gdal_nodata("gdal-no-nodata.tif", None, None);
     }
 
     #[test]

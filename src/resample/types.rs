@@ -101,7 +101,7 @@ impl GeoTransform {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NoDataSpec {
     Gray(u8),
     Rgb(u8, u8, u8),
@@ -127,6 +127,7 @@ pub(crate) struct SourceMetadata {
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) georef: Georef,
+    pub(crate) gdal_nodata: Option<String>,
 }
 
 pub(crate) fn zoom_for_tile_size(required_size: f64) -> u8 {

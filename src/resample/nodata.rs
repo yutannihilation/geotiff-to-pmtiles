@@ -1,5 +1,21 @@
 use super::NoDataSpec;
 
+/// Parse a string as a u8, also accepting float-style strings like `"0.0"` or `"255.0"`
+/// as long as they represent an integer value in the `u8` range. Returns `None` otherwise.
+fn parse_u8_lenient(s: &str) -> Option<u8> {
+    if let Ok(v) = s.parse::<u8>() {
+        return Some(v);
+    }
+    // Try parsing as float and accepting only integer-valued values (handles GDAL-style "0.0", "255.0", etc.)
+    if let Ok(f) = s.parse::<f64>()
+        && (0.0..=255.0).contains(&f)
+        && f.fract() == 0.0
+    {
+        return Some(f as u8);
+    }
+    None
+}
+
 pub(crate) fn parse_nodata(
     value: Option<&str>,
 ) -> Result<Option<NoDataSpec>, Box<dyn std::error::Error>> {
@@ -18,21 +34,17 @@ pub(crate) fn parse_nodata(
         .collect::<Vec<_>>();
     match parts.len() {
         1 => {
-            let v: u8 = parts[0]
-                .parse()
-                .map_err(|_| format!("invalid --nodata value: {value}"))?;
+            let v = parse_u8_lenient(parts[0])
+                .ok_or_else(|| format!("invalid --nodata value: {value}"))?;
             Ok(Some(NoDataSpec::Gray(v)))
         }
         3 => {
-            let r: u8 = parts[0]
-                .parse()
-                .map_err(|_| format!("invalid --nodata value: {value}"))?;
-            let g: u8 = parts[1]
-                .parse()
-                .map_err(|_| format!("invalid --nodata value: {value}"))?;
-            let b: u8 = parts[2]
-                .parse()
-                .map_err(|_| format!("invalid --nodata value: {value}"))?;
+            let r = parse_u8_lenient(parts[0])
+                .ok_or_else(|| format!("invalid --nodata value: {value}"))?;
+            let g = parse_u8_lenient(parts[1])
+                .ok_or_else(|| format!("invalid --nodata value: {value}"))?;
+            let b = parse_u8_lenient(parts[2])
+                .ok_or_else(|| format!("invalid --nodata value: {value}"))?;
             Ok(Some(NoDataSpec::Rgb(r, g, b)))
         }
         _ => Err(format!("invalid --nodata value: {value}. Use '0' or '255,255,255'.").into()),
@@ -69,9 +81,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_float_style_values() {
+        let parsed = parse_nodata(Some("0.0")).unwrap();
+        match parsed {
+            Some(NoDataSpec::Gray(v)) => assert_eq!(v, 0),
+            _ => panic!("expected gray nodata"),
+        }
+
+        let parsed = parse_nodata(Some("255.0")).unwrap();
+        match parsed {
+            Some(NoDataSpec::Gray(v)) => assert_eq!(v, 255),
+            _ => panic!("expected gray nodata"),
+        }
+    }
+
+    #[test]
+    fn parses_rgb_float_style_values() {
+        let parsed = parse_nodata(Some("1.0, 2.0, 3.0")).unwrap();
+        match parsed {
+            Some(NoDataSpec::Rgb(r, g, b)) => assert_eq!((r, g, b), (1, 2, 3)),
+            _ => panic!("expected rgb nodata"),
+        }
+    }
+
+    #[test]
     fn rejects_invalid_values() {
         assert!(parse_nodata(Some("1,2")).is_err());
         assert!(parse_nodata(Some("x")).is_err());
         assert!(parse_nodata(Some("1,2,300")).is_err());
+        assert!(parse_nodata(Some("-9999")).is_err());
+        assert!(parse_nodata(Some("0.5")).is_err());
     }
 }

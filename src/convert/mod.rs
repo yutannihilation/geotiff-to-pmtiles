@@ -13,7 +13,7 @@ use tiff_compio::ChunkLayout;
 
 use crate::cli::Resampling;
 use crate::resample::{
-    Georef, Pt, SourceMetadata, TILE_SIZE, parse_nodata, source_corners_merc_georef,
+    Georef, NoDataSpec, Pt, SourceMetadata, TILE_SIZE, parse_nodata, source_corners_merc_georef,
     tile_bounds_webmerc, tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
@@ -242,11 +242,56 @@ pub fn convert(
         avif_quality,
         avif_speed,
     } = options;
-    let nodata = parse_nodata(nodata)?;
+    let cli_nodata = parse_nodata(nodata)?;
 
     println!("Input args: {}; loading metadata...", input.join(" "));
     let sources_meta = crate::resample::load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
+
+    // Use CLI --nodata if provided, otherwise fall back to GDAL_NODATA tags
+    // (only when all sources agree on a single value).
+    let nodata = if cli_nodata.is_some() {
+        cli_nodata
+    } else {
+        // Parse each source's GDAL_NODATA into a NoDataSpec so that different
+        // textual spellings of the same value (e.g. "0" vs "0.0") don't cause
+        // false conflicts.
+        let mut gdal_specs: HashSet<NoDataSpec> = HashSet::new();
+        for meta in &sources_meta {
+            if let Some(val) = meta.gdal_nodata.as_deref() {
+                let trimmed = val.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match parse_nodata(Some(trimmed)) {
+                    Ok(Some(spec)) => {
+                        gdal_specs.insert(spec);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: ignoring unsupported GDAL_NODATA value `{trimmed}`: {e}"
+                        );
+                    }
+                }
+            }
+        }
+
+        match gdal_specs.len() {
+            0 => None,
+            1 => {
+                let spec = gdal_specs.into_iter().next().unwrap();
+                println!("Using GDAL_NODATA value from source(s)");
+                Some(spec)
+            }
+            _ => {
+                return Err(
+                    "conflicting GDAL_NODATA values across input sources; please specify --nodata"
+                        .into(),
+                );
+            }
+        }
+    };
 
     // Open all source TIFFs with compio and compute layouts once at startup.
     // compio::fs::File is !Send, so readers must stay on the main thread.

@@ -62,16 +62,40 @@ pub(crate) fn tile_corners_in_georef_raster(
     Ok(out)
 }
 
-pub(crate) fn read_georef(
-    path: &std::path::Path,
+/// Open a TIFF once and extract dimensions, georeferencing, and GDAL_NODATA.
+pub(crate) fn read_source_metadata(
+    path: std::path::PathBuf,
     src_crs: Option<&str>,
-) -> Result<Georef, Box<dyn std::error::Error>> {
+) -> Result<super::SourceMetadata, Box<dyn std::error::Error>> {
     let rt = compio::runtime::Runtime::new()?;
     let reader = rt.block_on(async {
-        let file = compio::fs::File::open(path).await?;
+        let file = compio::fs::File::open(&path).await?;
         tiff_compio::TiffReader::new(file).await
     })?;
 
+    let (w, h) = reader.dimensions()?;
+
+    let gdal_nodata = reader
+        .find_tag(tag::GDAL_NODATA)
+        .map(|v| v.into_string())
+        .transpose()?;
+
+    let georef = read_georef_from_reader(&reader, src_crs, &path)?;
+
+    Ok(super::SourceMetadata {
+        path,
+        width: w as usize,
+        height: h as usize,
+        georef,
+        gdal_nodata,
+    })
+}
+
+fn read_georef_from_reader(
+    reader: &tiff_compio::TiffReader<compio::fs::File>,
+    src_crs: Option<&str>,
+    path: &std::path::Path,
+) -> Result<Georef, Box<dyn std::error::Error>> {
     let geokey_directory: Option<Vec<u16>> = reader
         .find_tag(tag::GEO_KEY_DIRECTORY)
         .map(|value| value.into_u16_vec())
