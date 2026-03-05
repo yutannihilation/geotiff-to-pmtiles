@@ -50,6 +50,7 @@ mod decompress;
 mod error;
 mod header;
 mod ifd;
+pub mod normalize;
 pub mod tag;
 
 pub use byte_order::ByteOrder;
@@ -186,7 +187,15 @@ impl<R: AsyncReadAt> TiffReader<R> {
         // tile_width × tile_height pixels (including out-of-bounds padding on
         // edge tiles). For strips, chunk_width == image_width and chunk_height
         // == rows_per_strip, so using the nominal size is also correct.
-        decompress::decompress(compressed, layout.compression, nominal_chunk_bytes)
+        decompress::decompress(
+            compressed,
+            layout.compression,
+            nominal_chunk_bytes,
+            layout.predictor,
+            bytes_per_sample(&layout.bits_per_sample),
+            layout.samples_per_pixel as usize,
+            layout.chunk_width,
+        )
     }
 
     /// Read all chunks and assemble them into a contiguous, full-image pixel buffer.

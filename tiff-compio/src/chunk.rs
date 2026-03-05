@@ -87,6 +87,10 @@ pub struct ChunkLayout {
     /// Bytes per pixel (`samples_per_pixel * ceil(bits_per_sample[0] / 8)`).
     /// Cached to avoid recomputation on every chunk read.
     pub bytes_per_pixel: usize,
+    /// TIFF Predictor tag value (1=None, 2=Horizontal differencing).
+    pub predictor: u16,
+    /// TIFF SampleFormat tag value (1=uint, 2=int, 3=float, 4=undefined).
+    pub sample_format: u16,
 }
 
 impl ChunkLayout {
@@ -126,6 +130,19 @@ impl ChunkLayout {
             .transpose()?
             .unwrap_or(1);
 
+        let predictor = reader
+            .find_tag(tag::PREDICTOR)
+            .map(|v| v.into_u16())
+            .transpose()?
+            .unwrap_or(1); // default: no predictor
+
+        let sample_format = reader
+            .find_tag(tag::SAMPLE_FORMAT)
+            .map(|v| v.into_u16_vec())
+            .transpose()?
+            .and_then(|v| v.first().copied())
+            .unwrap_or(1); // default: unsigned integer
+
         // Determine strip vs tile
         let has_tile_width = reader.find_tag(tag::TILE_WIDTH).is_some();
 
@@ -137,6 +154,8 @@ impl ChunkLayout {
                 compression,
                 bits_per_sample,
                 samples_per_pixel,
+                predictor,
+                sample_format,
             )
         } else {
             Self::from_strip_tags(
@@ -146,10 +165,13 @@ impl ChunkLayout {
                 compression,
                 bits_per_sample,
                 samples_per_pixel,
+                predictor,
+                sample_format,
             )
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_tile_tags<R: AsyncReadAt>(
         reader: &TiffReader<R>,
         image_width: u32,
@@ -157,6 +179,8 @@ impl ChunkLayout {
         compression: u16,
         bits_per_sample: Vec<u16>,
         samples_per_pixel: u16,
+        predictor: u16,
+        sample_format: u16,
     ) -> Result<Self, TiffError> {
         let tile_width = reader
             .find_tag(tag::TILE_WIDTH)
@@ -196,9 +220,12 @@ impl ChunkLayout {
             bits_per_sample,
             samples_per_pixel,
             bytes_per_pixel,
+            predictor,
+            sample_format,
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_strip_tags<R: AsyncReadAt>(
         reader: &TiffReader<R>,
         image_width: u32,
@@ -206,6 +233,8 @@ impl ChunkLayout {
         compression: u16,
         bits_per_sample: Vec<u16>,
         samples_per_pixel: u16,
+        predictor: u16,
+        sample_format: u16,
     ) -> Result<Self, TiffError> {
         let rows_per_strip = reader
             .find_tag(tag::ROWS_PER_STRIP)
@@ -242,6 +271,8 @@ impl ChunkLayout {
             bits_per_sample,
             samples_per_pixel,
             bytes_per_pixel,
+            predictor,
+            sample_format,
         })
     }
 
@@ -291,6 +322,8 @@ mod tests {
             bits_per_sample: vec![8],
             samples_per_pixel: 3,
             bytes_per_pixel: 3,
+            predictor: 1,
+            sample_format: 1,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (256, 256));
@@ -315,6 +348,8 @@ mod tests {
             bits_per_sample: vec![8],
             samples_per_pixel: 3,
             bytes_per_pixel: 3,
+            predictor: 1,
+            sample_format: 1,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (44, 256)); // right edge
@@ -339,6 +374,8 @@ mod tests {
             bits_per_sample: vec![8],
             samples_per_pixel: 3,
             bytes_per_pixel: 3,
+            predictor: 1,
+            sample_format: 1,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (100, 100));
         assert_eq!(layout.chunk_data_dimensions(1), (100, 100));

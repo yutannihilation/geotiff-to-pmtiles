@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use crate::cli::Resampling;
 use crate::resample::{NoDataSpec, Pt, lerp};
 
 use super::TILE_SIZE;
-use super::cache::GlobalChunkCache;
+use super::cache::{ChunkData, ChunkKey};
 use super::source::SourceSampler;
 
 type NearestSample = ([u8; 4], f64);
@@ -21,7 +23,7 @@ pub(super) fn render_tile_chunked(
     selected: &[(usize, [Pt; 4])],
     resampling: Resampling,
     nodata: Option<NoDataSpec>,
-    cache: &mut GlobalChunkCache,
+    chunk_map: &HashMap<ChunkKey, ChunkData>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Render one TILE_SIZE x TILE_SIZE output tile in scanline order.
     let mut out = vec![0_u8; TILE_SIZE * TILE_SIZE * 4];
@@ -32,7 +34,7 @@ pub(super) fn render_tile_chunked(
         match resampling {
             Resampling::Nearest => {
                 for i in 0..TILE_SIZE {
-                    let px = sample_nearest_multi(sources, &cursors, nodata, cache)?;
+                    let px = sample_nearest_multi(sources, &cursors, nodata, chunk_map)?;
                     let base = (j * TILE_SIZE + i) * 4;
                     out[base] = px[0];
                     out[base + 1] = px[1];
@@ -43,7 +45,7 @@ pub(super) fn render_tile_chunked(
             }
             Resampling::Bilinear => {
                 for i in 0..TILE_SIZE {
-                    let px = sample_bilinear_multi(sources, &cursors, nodata, cache)?;
+                    let px = sample_bilinear_multi(sources, &cursors, nodata, chunk_map)?;
                     let base = (j * TILE_SIZE + i) * 4;
                     out[base] = px[0];
                     out[base + 1] = px[1];
@@ -88,13 +90,13 @@ fn sample_nearest_multi(
     samplers: &mut [SourceSampler],
     cursors: &[RowSampleCursor],
     nodata: Option<NoDataSpec>,
-    cache: &mut GlobalChunkCache,
+    chunk_map: &HashMap<ChunkKey, ChunkData>,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // Nearest policy across sources: choose globally nearest valid sample in raster pixel space.
     let mut best: Option<NearestSample> = None;
     for c in cursors {
         if let Some((px, dist2)) =
-            sample_nearest_with_dist(samplers, c.source_idx, c.x, c.y, nodata, cache)?
+            sample_nearest_with_dist(samplers, c.source_idx, c.x, c.y, nodata, chunk_map)?
         {
             match best {
                 Some((_, d)) if d <= dist2 => {}
@@ -109,11 +111,12 @@ fn sample_bilinear_multi(
     samplers: &mut [SourceSampler],
     cursors: &[RowSampleCursor],
     nodata: Option<NoDataSpec>,
-    cache: &mut GlobalChunkCache,
+    chunk_map: &HashMap<ChunkKey, ChunkData>,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // Bilinear policy across sources: first source in input order that yields a valid sample wins.
     for c in cursors {
-        if let Some(px) = sample_bilinear_opt(samplers, c.source_idx, c.x, c.y, nodata, cache)? {
+        if let Some(px) = sample_bilinear_opt(samplers, c.source_idx, c.x, c.y, nodata, chunk_map)?
+        {
             return Ok(px);
         }
     }
@@ -126,7 +129,7 @@ fn sample_nearest_with_dist(
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
-    cache: &mut GlobalChunkCache,
+    chunk_map: &HashMap<ChunkKey, ChunkData>,
 ) -> Result<Option<NearestSample>, Box<dyn std::error::Error>> {
     let x0 = x.floor() as isize;
     let y0 = y.floor() as isize;
@@ -138,7 +141,7 @@ fn sample_nearest_with_dist(
     });
 
     for (xi, yi) in candidates {
-        let Some(px) = samplers[source_idx].sample_pixel_opt(source_idx, xi, yi, cache)? else {
+        let Some(px) = samplers[source_idx].sample_pixel_opt(source_idx, xi, yi, chunk_map)? else {
             continue;
         };
         if let Some(nd) = nodata
@@ -158,7 +161,7 @@ fn sample_bilinear_opt(
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
-    cache: &mut GlobalChunkCache,
+    chunk_map: &HashMap<ChunkKey, ChunkData>,
 ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
     let x0 = x.floor();
     let y0 = y.floor();
@@ -170,19 +173,39 @@ fn sample_bilinear_opt(
     // Weighted 2x2 neighborhood around (x, y); invalid/nodata neighbors are skipped.
     let samples = [
         (
-            samplers[source_idx].sample_pixel_opt(source_idx, x0 as isize, y0 as isize, cache)?,
+            samplers[source_idx].sample_pixel_opt(
+                source_idx,
+                x0 as isize,
+                y0 as isize,
+                chunk_map,
+            )?,
             (1.0 - tx) * (1.0 - ty),
         ),
         (
-            samplers[source_idx].sample_pixel_opt(source_idx, x1 as isize, y0 as isize, cache)?,
+            samplers[source_idx].sample_pixel_opt(
+                source_idx,
+                x1 as isize,
+                y0 as isize,
+                chunk_map,
+            )?,
             tx * (1.0 - ty),
         ),
         (
-            samplers[source_idx].sample_pixel_opt(source_idx, x0 as isize, y1 as isize, cache)?,
+            samplers[source_idx].sample_pixel_opt(
+                source_idx,
+                x0 as isize,
+                y1 as isize,
+                chunk_map,
+            )?,
             (1.0 - tx) * ty,
         ),
         (
-            samplers[source_idx].sample_pixel_opt(source_idx, x1 as isize, y1 as isize, cache)?,
+            samplers[source_idx].sample_pixel_opt(
+                source_idx,
+                x1 as isize,
+                y1 as isize,
+                chunk_map,
+            )?,
             tx * ty,
         ),
     ];

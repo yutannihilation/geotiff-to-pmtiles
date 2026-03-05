@@ -1,9 +1,5 @@
-use std::fs::File;
-use std::io::BufReader;
-
 use proj_lite::Proj;
-use tiff::decoder::Decoder;
-use tiff::tags::Tag;
+use tiff_compio::tag;
 
 use super::{GeoTransform, Georef, Pt};
 
@@ -70,12 +66,14 @@ pub(crate) fn read_georef(
     path: &std::path::Path,
     src_crs: Option<&str>,
 ) -> Result<Georef, Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut decoder = Decoder::new(reader)?;
+    let rt = compio::runtime::Runtime::new()?;
+    let reader = rt.block_on(async {
+        let file = compio::fs::File::open(path).await?;
+        tiff_compio::TiffReader::new(file).await
+    })?;
 
-    let geokey_directory = decoder
-        .find_tag(Tag::GeoKeyDirectoryTag)?
+    let geokey_directory: Option<Vec<u16>> = reader
+        .find_tag(tag::GEO_KEY_DIRECTORY)
         .map(|value| value.into_u16_vec())
         .transpose()?;
     let (source_crs, raster_type) = if let Some(geokey_directory) = geokey_directory.as_deref() {
@@ -92,9 +90,9 @@ pub(crate) fn read_georef(
 
     let mut used_tfw = false;
     // Prefer explicit GeoTIFF transform tags, then fallback to adjacent world file.
-    let forward = if let Some(matrix) = decoder
-        .find_tag(Tag::ModelTransformationTag)?
-        .map(|value| value.into_f64_vec())
+    let forward = if let Some(matrix) = reader
+        .find_tag(tag::MODEL_TRANSFORMATION)
+        .map(|value: tiff_compio::TagValue| value.into_f64_vec())
         .transpose()?
     {
         if matrix.len() < 16 {
@@ -109,13 +107,13 @@ pub(crate) fn read_georef(
             t5: matrix[7],
         }
     } else if let (Some(pixel_scale), Some(tie_points)) = (
-        decoder
-            .find_tag(Tag::ModelPixelScaleTag)?
-            .map(|value| value.into_f64_vec())
+        reader
+            .find_tag(tag::MODEL_PIXEL_SCALE)
+            .map(|value: tiff_compio::TagValue| value.into_f64_vec())
             .transpose()?,
-        decoder
-            .find_tag(Tag::ModelTiepointTag)?
-            .map(|value| value.into_f64_vec())
+        reader
+            .find_tag(tag::MODEL_TIEPOINT)
+            .map(|value: tiff_compio::TagValue| value.into_f64_vec())
             .transpose()?,
     ) {
         if pixel_scale.len() < 2 {

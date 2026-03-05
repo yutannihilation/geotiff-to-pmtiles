@@ -1,9 +1,6 @@
-use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
 
 use rayon::prelude::*;
-use tiff::decoder::Decoder;
 
 use super::{SourceMetadata, read_georef};
 
@@ -79,10 +76,12 @@ pub(crate) fn load_source_metadata(
 }
 
 fn raster_dimensions(path: &std::path::Path) -> Result<(usize, usize), Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut decoder = Decoder::new(reader)?;
-    let (w, h) = decoder.dimensions()?;
+    let rt = compio::runtime::Runtime::new()?;
+    let (w, h) = rt.block_on(async {
+        let file = compio::fs::File::open(path).await?;
+        let reader = tiff_compio::TiffReader::new(file).await?;
+        reader.dimensions()
+    })?;
     Ok((w as usize, h as usize))
 }
 
