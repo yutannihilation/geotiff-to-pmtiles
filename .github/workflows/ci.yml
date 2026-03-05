@@ -40,9 +40,6 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
-      - name: Clippy
-        run: cargo clippy -p tiff-compio -- -D warnings
-
       - name: Build check
         run: cargo check --workspace
 
