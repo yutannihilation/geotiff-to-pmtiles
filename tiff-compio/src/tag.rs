@@ -31,6 +31,8 @@ pub const PHOTOMETRIC_INTERPRETATION: u16 = 262;
 pub const SAMPLES_PER_PIXEL: u16 = 277;
 /// Tag 284: How samples are stored (1=chunky/interleaved, 2=planar).
 pub const PLANAR_CONFIGURATION: u16 = 284;
+/// Tag 317: Predictor for compression (1=None, 2=Horizontal differencing).
+pub const PREDICTOR: u16 = 317;
 /// Tag 339: Data type of each sample (1=uint, 2=int, 3=float, 4=undefined).
 pub const SAMPLE_FORMAT: u16 = 339;
 

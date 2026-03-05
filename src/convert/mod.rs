@@ -1,13 +1,15 @@
-mod cache;
+pub(crate) mod cache;
 mod render;
 mod source;
 
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::mpsc;
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
 use rayon::prelude::*;
+use tiff_compio::ChunkLayout;
 
 use crate::cli::Resampling;
 use crate::resample::{
@@ -15,13 +17,13 @@ use crate::resample::{
     tile_bounds_webmerc, tile_corners_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
-use self::cache::GlobalChunkCache;
+use self::cache::{ChunkData, ChunkKey};
 use self::render::render_tile_chunked;
 use self::source::{ChunkedTiffSampler, SourceReader, SourceSampler};
 
-// Global cache budget shared across all input sources/chunks.
-// This caps memory growth when many TIFF files are involved.
-const DEFAULT_GLOBAL_CHUNK_CACHE_BYTES: usize = 128 * 1024 * 1024;
+/// Default batch size for tile processing. Controls memory: each batch pre-loads
+/// all needed TIFF chunks before rendering.
+const BATCH_SIZE: usize = 256;
 
 pub struct ConvertOptions<'a> {
     pub src_crs: Option<&'a str>,
@@ -29,7 +31,6 @@ pub struct ConvertOptions<'a> {
     pub min_zoom: Option<u8>,
     pub max_zoom: Option<u8>,
     pub resampling: Resampling,
-    pub cache_mb: usize,
     pub avif_quality: u8,
     pub avif_speed: u8,
 }
@@ -39,28 +40,25 @@ struct SourceSpec {
     width: usize,
     height: usize,
     georef: Georef,
+    /// Pre-computed chunk layout (None if chunked mode not supported for this source).
+    layout: Option<ChunkLayout>,
 }
 
 impl SourceSpec {
-    fn from_meta(meta: SourceMetadata) -> Self {
+    fn from_meta(meta: SourceMetadata, layout: Option<ChunkLayout>) -> Self {
         Self {
             path: meta.path,
             width: meta.width,
             height: meta.height,
             georef: meta.georef,
+            layout,
         }
     }
-}
-
-struct WorkerState {
-    sources: Vec<SourceSampler>,
-    cache: GlobalChunkCache,
 }
 
 #[derive(Clone, Copy)]
 struct TileJob {
     tile_id: u64,
-    // Position in global tile_id-sorted write order.
     write_idx: usize,
     z: u8,
     x: u32,
@@ -69,7 +67,6 @@ struct TileJob {
 }
 
 fn split_by_1_bits(mut value: u64) -> u64 {
-    // Interleave lower 32 bits: abcdef... -> a0b0c0d0...
     value &= 0x0000_0000_FFFF_FFFF;
     value = (value | (value << 16)) & 0x0000_FFFF_0000_FFFF;
     value = (value | (value << 8)) & 0x00FF_00FF_00FF_00FF;
@@ -84,93 +81,164 @@ fn morton_key_2d(x: u64, y: u64) -> u64 {
 }
 
 fn tile_locality_key(z: u8, x: u32, y: u32, max_zoom: u8) -> u64 {
-    // Normalize every tile center onto a max_zoom grid to keep nearby areas
-    // close in render order even when z differs.
     let shift = (max_zoom - z) as u32;
     let nx = (((x as u64) << shift) << 1) | 1;
     let ny = (((y as u64) << shift) << 1) | 1;
     morton_key_2d(nx, ny)
 }
 
-impl WorkerState {
-    fn new(specs: &[SourceSpec], cache_bytes: usize) -> Self {
-        // Each worker owns its own decoders and cache to avoid lock contention
-        // during parallel render/encode.
-        let mut sources = Vec::with_capacity(specs.len());
-        for spec in specs {
-            let reader =
-                match ChunkedTiffSampler::open(spec.path.as_path(), spec.width, spec.height) {
-                    Ok(sampler) => SourceReader::Chunked(Box::new(sampler)),
-                    Err(_) => SourceReader::FullDeferred(None),
-                };
-            sources.push(SourceSampler {
-                path: spec.path.clone(),
-                reader,
-            });
-        }
-        Self {
-            sources,
-            cache: GlobalChunkCache::new(cache_bytes),
-        }
-    }
+/// Compute which TIFF chunks a tile needs from each source.
+fn compute_chunk_requirements(
+    tile: (u8, u32, u32),
+    source_specs: &[SourceSpec],
+    source_bounds: &[(f64, f64, f64, f64)],
+) -> (HashSet<ChunkKey>, Vec<(usize, [Pt; 4])>) {
+    let (z, x, y) = tile;
+    let bounds = tile_bounds_webmerc(z, x, y);
+    let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
+    let tile_min_x = bounds.ul.x.min(bounds.lr.x);
+    let tile_max_x = bounds.ul.x.max(bounds.lr.x);
+    let tile_min_y = bounds.ul.y.min(bounds.lr.y);
+    let tile_max_y = bounds.ul.y.max(bounds.lr.y);
 
-    fn render_and_encode_tile(
-        &mut self,
-        tile: (u8, u32, u32),
-        source_specs: &[SourceSpec],
-        source_bounds: &[(f64, f64, f64, f64)],
-        resampling: Resampling,
-        nodata: Option<crate::resample::NoDataSpec>,
-        avif_quality: u8,
-        avif_speed: u8,
-    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-        let (z, x, y) = tile;
-        let bounds = tile_bounds_webmerc(z, x, y);
-        let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
-        let tile_min_x = bounds.ul.x.min(bounds.lr.x);
-        let tile_max_x = bounds.ul.x.max(bounds.lr.x);
-        let tile_min_y = bounds.ul.y.min(bounds.lr.y);
-        let tile_max_y = bounds.ul.y.max(bounds.lr.y);
+    let mut needed_chunks = HashSet::new();
+    let mut selected_sources = Vec::new();
 
-        let mut loaded_sources: Vec<(usize, [Pt; 4])> = Vec::new();
-        let mut active_sources = vec![false; self.sources.len()];
-        for (source_idx, (spec, (smin_x, smin_y, smax_x, smax_y))) in
-            source_specs.iter().zip(source_bounds.iter()).enumerate()
-        {
-            let intersects = !(tile_max_x < *smin_x
-                || tile_min_x > *smax_x
-                || tile_max_y < *smin_y
-                || tile_min_y > *smax_y);
-            if !intersects {
-                continue;
+    for (source_idx, (spec, (smin_x, smin_y, smax_x, smax_y))) in
+        source_specs.iter().zip(source_bounds.iter()).enumerate()
+    {
+        let intersects = !(tile_max_x < *smin_x
+            || tile_min_x > *smax_x
+            || tile_max_y < *smin_y
+            || tile_min_y > *smax_y);
+        if !intersects {
+            continue;
+        }
+
+        let corners = match tile_corners_in_georef_raster(&spec.georef, tile_merc_corners) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Compute raster-space bounding box from the 4 corners
+        let mut min_rx = f64::INFINITY;
+        let mut max_rx = f64::NEG_INFINITY;
+        let mut min_ry = f64::INFINITY;
+        let mut max_ry = f64::NEG_INFINITY;
+        for c in &corners {
+            min_rx = min_rx.min(c.x);
+            max_rx = max_rx.max(c.x);
+            min_ry = min_ry.min(c.y);
+            max_ry = max_ry.max(c.y);
+        }
+
+        // Add 1 pixel margin for bilinear sampling
+        min_rx = (min_rx - 1.0).max(0.0);
+        min_ry = (min_ry - 1.0).max(0.0);
+        max_rx = (max_rx + 1.0).min(spec.width as f64);
+        max_ry = (max_ry + 1.0).min(spec.height as f64);
+
+        // Map pixel bbox to chunk indices
+        if let Some(layout) = &spec.layout {
+            let cw = layout.chunk_width as f64;
+            let ch = layout.chunk_height as f64;
+            let cx_min = (min_rx / cw).floor() as u32;
+            let cx_max = (max_rx / cw).floor().min(layout.chunks_across as f64 - 1.0) as u32;
+            let cy_min = (min_ry / ch).floor() as u32;
+            let cy_max = (max_ry / ch).floor().min(layout.chunks_down as f64 - 1.0) as u32;
+
+            for cy in cy_min..=cy_max {
+                for cx in cx_min..=cx_max {
+                    let chunk_idx = cy * layout.chunks_across + cx;
+                    if chunk_idx < layout.chunk_count {
+                        needed_chunks.insert(ChunkKey {
+                            source_idx,
+                            chunk_idx,
+                        });
+                    }
+                }
             }
-            let corners = tile_corners_in_georef_raster(&spec.georef, tile_merc_corners)?;
-            loaded_sources.push((source_idx, corners));
-            active_sources[source_idx] = true;
         }
 
-        let rgba = render_tile_chunked(
-            &mut self.sources,
-            &loaded_sources,
-            resampling,
-            nodata,
-            &mut self.cache,
-        )?;
-        for (i, source) in self.sources.iter_mut().enumerate() {
-            source.release_if_inactive(active_sources[i]);
-        }
-        // If every output pixel is transparent, skip emitting this tile entirely.
-        // This avoids writing visual "empty" tiles where nodata/out-of-bounds dominates.
-        if rgba.chunks_exact(4).all(|px| px[3] == 0) {
-            return Ok(None);
-        }
-
-        Ok(Some(crate::resample::encode_avif(
-            &rgba,
-            avif_speed,
-            avif_quality,
-        )?))
+        selected_sources.push((source_idx, corners));
     }
+
+    (needed_chunks, selected_sources)
+}
+
+/// Read and decompress needed TIFF chunks via compio async I/O.
+///
+/// Must be called from a compio runtime context (inside `block_on`).
+async fn read_chunks_async(
+    needed_chunks: &HashSet<ChunkKey>,
+    readers: &[tiff_compio::TiffReader<compio::fs::File>],
+    layouts: &[Option<ChunkLayout>],
+) -> Result<HashMap<ChunkKey, ChunkData>, Box<dyn std::error::Error>> {
+    if needed_chunks.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut chunk_map = HashMap::with_capacity(needed_chunks.len());
+    for key in needed_chunks {
+        let layout = layouts[key.source_idx]
+            .as_ref()
+            .expect("chunk requested for source without layout");
+        let raw = readers[key.source_idx]
+            .read_chunk(layout, key.chunk_idx)
+            .await?;
+        let (cw, ch) = layout.chunk_data_dimensions(key.chunk_idx);
+
+        // Normalize to u8
+        let bits_per_sample = layout.bits_per_sample[0];
+        let sample_format = layout.sample_format;
+        let data = tiff_compio::normalize::normalize_to_u8(
+            raw,
+            bits_per_sample,
+            sample_format,
+            readers[key.source_idx].byte_order(),
+        );
+
+        let cw = cw as usize;
+        let ch = ch as usize;
+        let samples = layout.samples_per_pixel as usize;
+        let stride = if cw == 0 || ch == 0 {
+            samples.max(1)
+        } else {
+            (data.len() / (cw * ch)).max(1)
+        };
+
+        chunk_map.insert(
+            *key,
+            ChunkData {
+                width: cw,
+                height: ch,
+                stride,
+                data,
+            },
+        );
+    }
+
+    Ok(chunk_map)
+}
+
+/// Build SourceSampler instances (layout metadata only, no file handles).
+fn make_samplers(source_specs: &[SourceSpec]) -> Vec<SourceSampler> {
+    let mut sources = Vec::with_capacity(source_specs.len());
+    for spec in source_specs {
+        let reader = if let Some(layout) = &spec.layout {
+            match ChunkedTiffSampler::from_layout(layout) {
+                Ok(sampler) => SourceReader::Chunked(Box::new(sampler)),
+                Err(_) => SourceReader::FullDeferred(None),
+            }
+        } else {
+            SourceReader::FullDeferred(None)
+        };
+        sources.push(SourceSampler {
+            path: spec.path.clone(),
+            reader,
+        });
+    }
+    sources
 }
 
 pub fn convert(
@@ -184,28 +252,30 @@ pub fn convert(
         min_zoom: min_zoom_opt,
         max_zoom: max_zoom_opt,
         resampling,
-        cache_mb,
         avif_quality,
         avif_speed,
     } = options;
     let nodata = parse_nodata(nodata)?;
-    // Memory-first strategy:
-    // 1) load only metadata up front
-    // 2) decode TIFF chunks lazily during sampling
-    // 3) keep a global byte-bounded LRU cache of decoded chunks
+
     println!("Input args: {}; loading metadata...", input.join(" "));
     let sources_meta = crate::resample::load_source_metadata(input, src_crs)?;
     println!("Loaded metadata for {} source file(s)", sources_meta.len());
+
+    // Open all source TIFFs with compio and compute layouts once at startup.
+    // compio::fs::File is !Send, so readers must stay on the main thread.
+    let source_paths: Vec<_> = sources_meta.iter().map(|m| m.path.clone()).collect();
+    let rt = compio::runtime::Runtime::new()?;
+    let (readers, layouts) = open_sources(&rt, &source_paths)?;
+
     let source_specs: Vec<SourceSpec> = sources_meta
         .into_iter()
-        .map(SourceSpec::from_meta)
+        .zip(layouts.iter().cloned())
+        .map(|(meta, layout)| SourceSpec::from_meta(meta, layout))
         .collect();
 
     let mut corners_merc = Vec::new();
     let mut source_bounds = Vec::with_capacity(source_specs.len());
     for source in &source_specs {
-        // Build per-source bbox in Web Mercator once so each tile can cheaply cull non-overlapping
-        // datasets before attempting any raster sampling.
         let corners = source_corners_merc_georef(&source.georef, source.width, source.height)?;
         let min_x = corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
         let max_x = corners
@@ -238,8 +308,6 @@ pub fn convert(
         .map(|p| p.y)
         .fold(f64::NEG_INFINITY, f64::max);
 
-    // Default zoom heuristic: choose the coarsest zoom whose tile edge can still cover
-    // the largest side of the union extent. Higher zooms are added as a small pyramid.
     let auto_min_zoom = zoom_for_tile_size((max_x_merc - min_x_merc).max(max_y_merc - min_y_merc));
     let min_zoom = min_zoom_opt.unwrap_or(auto_min_zoom);
     if min_zoom > 31 {
@@ -284,15 +352,6 @@ pub fn convert(
     println!("Output: {}", output.display());
     println!("Zoom range: {min_zoom}..{max_zoom}");
     println!("AVIF: quality={avif_quality}, speed={avif_speed}");
-    let cache_bytes = if cache_mb == 0 {
-        DEFAULT_GLOBAL_CHUNK_CACHE_BYTES
-    } else {
-        cache_mb.saturating_mul(1024 * 1024)
-    };
-    println!("Chunk cache budget: {} MiB", cache_bytes / (1024 * 1024));
-    let workers = rayon::current_num_threads().max(1);
-    // Split budget across workers so total memory stays close to `cache_mb`.
-    let worker_cache_bytes = (cache_bytes / workers).max(1);
 
     let zoom_span = (max_zoom - min_zoom + 1) as usize;
     let mut skipped_empty_by_zoom = vec![0usize; zoom_span];
@@ -301,7 +360,6 @@ pub fn convert(
     let mut jobs = Vec::<TileJob>::new();
 
     for z in min_zoom..=max_zoom {
-        // Cover the full extent by taking the inclusive tile range from bbox corners.
         let (x_min, y_min) = webmerc_to_tile(min_x_merc, max_y_merc, z);
         let (x_max, y_max) = webmerc_to_tile(max_x_merc, min_y_merc, z);
 
@@ -359,8 +417,6 @@ pub fn convert(
     // Write order: strict PMTiles tile_id ascending for clustered output.
     let mut write_jobs = jobs;
     write_jobs.sort_by_key(|job| job.tile_id);
-    // Persist the global output sequence number so render workers can return results
-    // without a tile_id->index lookup in the writer thread.
     for (write_idx, job) in write_jobs.iter_mut().enumerate() {
         job.write_idx = write_idx;
     }
@@ -369,50 +425,77 @@ pub fn convert(
     let mut render_jobs = write_jobs.clone();
     render_jobs.sort_by_key(|job| (job.locality_key, job.z));
 
+    // --- Batch-based pipeline ---
+    //
+    // compio::fs::File is !Send (uses Rc internally), so all I/O must happen on the
+    // main thread. The pipeline processes tiles in batches:
+    //
+    //   Phase 1 (main thread, CPU): Compute which TIFF chunks each tile needs
+    //   Phase 2 (main thread, compio): Read + decompress + normalize all needed chunks
+    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + AVIF encode
+    //   Phase 4 (main thread): Write encoded tiles to PMTiles
+
     let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
     let mut next_to_write = 0usize;
-    // O(1) rendezvous buffer keyed by write order index.
     let mut ready_by_write_idx = vec![None::<Option<Vec<u8>>>; total_tiles];
     let mut render_error: Option<String> = None;
-    let source_specs_ref = &source_specs;
-    let source_bounds_ref = &source_bounds;
+    let mut reported_bucket = 0usize;
 
-    std::thread::scope(|scope| {
+    for batch in render_jobs.chunks(BATCH_SIZE) {
+        // Phase 1: Compute chunk requirements for all tiles in this batch
+        let mut batch_chunks = HashSet::new();
+        #[allow(clippy::type_complexity)]
+        let batch_selections: Vec<(TileJob, Vec<(usize, [Pt; 4])>)> = batch
+            .iter()
+            .map(|job| {
+                let (chunks, selected) = compute_chunk_requirements(
+                    (job.z, job.x, job.y),
+                    &source_specs,
+                    &source_bounds,
+                );
+                batch_chunks.extend(chunks);
+                (*job, selected)
+            })
+            .collect();
+
+        // Phase 2: Read all needed chunks via compio (main thread)
+        let chunk_map = rt.block_on(read_chunks_async(&batch_chunks, &readers, &layouts))?;
+
+        // Phase 3: Render tiles in parallel with rayon
         let tx = encoded_tx.clone();
-        scope.spawn(move || {
-            // `map_init` gives each rayon worker its own mutable worker state.
-            render_jobs
-                .par_iter()
-                .map_init(
-                    || WorkerState::new(source_specs_ref, worker_cache_bytes),
-                    |worker, job| {
-                        let encoded = worker
-                            .render_and_encode_tile(
-                                (job.z, job.x, job.y),
-                                source_specs_ref,
-                                source_bounds_ref,
-                                resampling,
-                                nodata,
-                                avif_quality,
-                                avif_speed,
-                            )
-                            .map_err(|e| e.to_string());
-                        let _ = tx.send((job.write_idx, encoded));
-                    },
-                )
-                .for_each(|_| {});
-        });
+        batch_selections
+            .par_iter()
+            .map_init(
+                || make_samplers(&source_specs),
+                |sources, (job, selected)| {
+                    let active_sources: Vec<bool> = (0..sources.len())
+                        .map(|i| selected.iter().any(|(si, _)| *si == i))
+                        .collect();
 
-        drop(encoded_tx);
-        let mut reported_bucket = 0usize;
-        while next_to_write < total_tiles {
-            let (done_write_idx, encoded) = match encoded_rx.recv() {
-                Ok(msg) => msg,
-                Err(e) => {
-                    render_error = Some(format!("render worker disconnected: {e}"));
-                    break;
-                }
-            };
+                    let result =
+                        render_tile_chunked(sources, selected, resampling, nodata, &chunk_map)
+                            .and_then(|rgba| {
+                                for (i, source) in sources.iter_mut().enumerate() {
+                                    source.release_if_inactive(active_sources[i]);
+                                }
+                                if rgba.chunks_exact(4).all(|px| px[3] == 0) {
+                                    return Ok(None);
+                                }
+                                Ok(Some(crate::resample::encode_avif(
+                                    &rgba,
+                                    avif_speed,
+                                    avif_quality,
+                                )?))
+                            })
+                            .map_err(|e| e.to_string());
+
+                    let _ = tx.send((job.write_idx, result));
+                },
+            )
+            .for_each(|_| {});
+
+        // Phase 4: Drain results from this batch and write in order
+        while let Ok((done_write_idx, encoded)) = encoded_rx.try_recv() {
             let avif = match encoded {
                 Ok(avif) => avif,
                 Err(msg) => {
@@ -420,39 +503,21 @@ pub fn convert(
                     break;
                 }
             };
-            // Store completed result in its final output slot.
             ready_by_write_idx[done_write_idx] = Some(avif);
-            while next_to_write < total_tiles {
-                let Some(bytes_opt) = ready_by_write_idx[next_to_write].take() else {
-                    break;
-                };
-                let write_job = write_jobs[next_to_write];
-                let write_z = write_job.z;
-                let write_x = write_job.x;
-                let write_y = write_job.y;
-                let zi = (write_z - min_zoom) as usize;
-                let Some(bytes) = bytes_opt else {
-                    transparent_by_zoom[zi] += 1;
-                    next_to_write += 1;
-                    let percent = (next_to_write * 100) / total_tiles.max(1);
-                    let bucket = percent / 10;
-                    if bucket > reported_bucket {
-                        reported_bucket = bucket;
-                        println!("{percent}% ({next_to_write}/{total_tiles})");
-                    }
-                    continue;
-                };
-                let coord = match TileCoord::new(write_z, write_x, write_y) {
-                    Ok(coord) => coord,
-                    Err(e) => {
-                        render_error = Some(format!("invalid tile coordinate: {e}"));
-                        break;
-                    }
-                };
-                if let Err(e) = writer.add_raw_tile(coord, &bytes) {
-                    render_error = Some(format!("failed to write tile: {e}"));
-                    break;
-                }
+        }
+
+        // Flush any tiles that are ready to write in order
+        while next_to_write < total_tiles {
+            let Some(bytes_opt) = ready_by_write_idx[next_to_write].take() else {
+                break;
+            };
+            let write_job = write_jobs[next_to_write];
+            let write_z = write_job.z;
+            let write_x = write_job.x;
+            let write_y = write_job.y;
+            let zi = (write_z - min_zoom) as usize;
+            let Some(bytes) = bytes_opt else {
+                transparent_by_zoom[zi] += 1;
                 next_to_write += 1;
                 let percent = (next_to_write * 100) / total_tiles.max(1);
                 let bucket = percent / 10;
@@ -460,12 +525,24 @@ pub fn convert(
                     reported_bucket = bucket;
                     println!("{percent}% ({next_to_write}/{total_tiles})");
                 }
-            }
-            if render_error.is_some() {
-                break;
+                continue;
+            };
+            let coord = TileCoord::new(write_z, write_x, write_y)?;
+            writer.add_raw_tile(coord, &bytes)?;
+            next_to_write += 1;
+            let percent = (next_to_write * 100) / total_tiles.max(1);
+            let bucket = percent / 10;
+            if bucket > reported_bucket {
+                reported_bucket = bucket;
+                println!("{percent}% ({next_to_write}/{total_tiles})");
             }
         }
-    });
+
+        if render_error.is_some() {
+            break;
+        }
+    }
+    drop(encoded_tx);
 
     if let Some(err) = render_error {
         return Err(err.into());
@@ -485,4 +562,47 @@ pub fn convert(
 
     writer.finalize()?;
     Ok(())
+}
+
+/// Open all source TIFFs as compio TiffReaders and compute their chunk layouts.
+type SourceReaders = (
+    Vec<tiff_compio::TiffReader<compio::fs::File>>,
+    Vec<Option<ChunkLayout>>,
+);
+
+fn open_sources(
+    rt: &compio::runtime::Runtime,
+    paths: &[std::path::PathBuf],
+) -> Result<SourceReaders, Box<dyn std::error::Error>> {
+    let mut readers = Vec::with_capacity(paths.len());
+    let mut layouts = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let reader = rt.block_on(async {
+            let file = compio::fs::File::open(path).await?;
+            tiff_compio::TiffReader::new(file).await
+        })?;
+
+        let layout = match reader.chunk_layout() {
+            Ok(layout) => {
+                // Check planar configuration — only chunky is supported
+                let planar = reader
+                    .find_tag(tiff_compio::tag::PLANAR_CONFIGURATION)
+                    .map(|v: tiff_compio::TagValue| v.into_u16())
+                    .transpose()?
+                    .unwrap_or(1);
+                if planar == 2 {
+                    None // Fall back to full raster for planar TIFFs
+                } else {
+                    Some(layout)
+                }
+            }
+            Err(_) => None,
+        };
+
+        readers.push(reader);
+        layouts.push(layout);
+    }
+
+    Ok((readers, layouts))
 }

@@ -1,16 +1,12 @@
-use std::fs::File;
-use std::io::BufReader;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use tiff::decoder::Decoder;
-use tiff::tags::Tag;
-
-use crate::resample::decoding_result_to_u8;
-
-use super::cache::{ChunkData, ChunkKey, GlobalChunkCache};
+use super::cache::{ChunkData, ChunkKey};
 
 pub(super) enum SourceReader {
+    /// Chunked sampling from pre-loaded chunk data (no decoder needed).
     Chunked(Box<ChunkedTiffSampler>),
+    /// Fallback: full raster loaded lazily on first access.
     FullDeferred(Option<crate::resample::Raster>),
 }
 
@@ -19,69 +15,44 @@ pub(super) struct SourceSampler {
     pub(super) reader: SourceReader,
 }
 
+/// Layout-only metadata for chunked TIFF sampling.
+/// Does NOT hold a decoder — all I/O is done externally via compio.
 pub(super) struct ChunkedTiffSampler {
-    decoder: Decoder<BufReader<File>>,
-    width: usize,
-    height: usize,
-    samples: usize,
-    chunk_w: usize,
-    chunk_h: usize,
-    chunks_across: usize,
-    chunks_down: usize,
-    chunk_count: usize,
+    pub(super) width: usize,
+    pub(super) height: usize,
+    pub(super) chunk_w: usize,
+    pub(super) chunk_h: usize,
+    pub(super) chunks_across: usize,
+    pub(super) chunk_count: usize,
 }
 
 impl ChunkedTiffSampler {
-    pub(super) fn open(
-        path: &std::path::Path,
-        width: usize,
-        height: usize,
+    /// Build a sampler from pre-computed layout metadata (no file I/O).
+    pub(super) fn from_layout(
+        layout: &tiff_compio::ChunkLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut decoder = Decoder::new(reader)?;
-        let samples = decoder
-            .find_tag(Tag::SamplesPerPixel)?
-            .map(|v| v.into_u16())
-            .transpose()?
-            .unwrap_or(1) as usize;
-        let planar_config = decoder
-            .find_tag(Tag::PlanarConfiguration)?
-            .map(|v| v.into_u16())
-            .transpose()?
-            .unwrap_or(1);
+        let planar_config = 1u16; // We only support chunky (interleaved) for chunked sampling
         if planar_config == 2 {
             return Err("planar TIFF is not supported for chunked sampling".into());
         }
 
-        let (cw_u32, ch_u32) = decoder.chunk_dimensions();
-        let chunk_w = cw_u32 as usize;
-        let chunk_h = ch_u32 as usize;
+        let chunk_w = layout.chunk_width as usize;
+        let chunk_h = layout.chunk_height as usize;
         if chunk_w == 0 || chunk_h == 0 {
             return Err("invalid chunk dimensions".into());
         }
-        let chunks_across = width.div_ceil(chunk_w);
-        let chunks_down = height.div_ceil(chunk_h);
-        let chunk_count = match decoder.get_chunk_type() {
-            tiff::decoder::ChunkType::Strip => decoder.strip_count()? as usize,
-            tiff::decoder::ChunkType::Tile => decoder.tile_count()? as usize,
-        };
 
-        // Keep only geometry/layout metadata here; chunk payloads are decoded on demand.
         Ok(Self {
-            decoder,
-            width,
-            height,
-            samples,
+            width: layout.image_width as usize,
+            height: layout.image_height as usize,
             chunk_w,
             chunk_h,
-            chunks_across,
-            chunks_down,
-            chunk_count,
+            chunks_across: layout.chunks_across as usize,
+            chunk_count: layout.chunk_count as usize,
         })
     }
 
-    fn chunk_and_local(&self, xi: isize, yi: isize) -> Option<(u32, usize, usize)> {
+    pub(super) fn chunk_and_local(&self, xi: isize, yi: isize) -> Option<(u32, usize, usize)> {
         // Map absolute pixel coordinate -> (chunk index, local x/y in chunk).
         if xi < 0 || yi < 0 || xi >= self.width as isize || yi >= self.height as isize {
             return None;
@@ -97,69 +68,6 @@ impl ChunkedTiffSampler {
         let x0 = cx * self.chunk_w;
         let y0 = cy * self.chunk_h;
         Some((chunk_idx, xi.saturating_sub(x0), yi.saturating_sub(y0)))
-    }
-
-    fn read_chunk_data(&mut self, chunk_idx: u32) -> Result<ChunkData, Box<dyn std::error::Error>> {
-        // Decode one TIFF chunk/strip and normalize to the unified u8 storage used by samplers.
-        let (cw_u32, ch_u32) = self.decoder.chunk_data_dimensions(chunk_idx);
-        let chunk = self.decoder.read_chunk(chunk_idx)?;
-        let data = decoding_result_to_u8(chunk);
-        let cw = cw_u32 as usize;
-        let ch = ch_u32 as usize;
-        let stride = if cw == 0 || ch == 0 {
-            self.samples.max(1)
-        } else {
-            (data.len() / (cw * ch)).max(1)
-        };
-        Ok(ChunkData {
-            width: cw,
-            height: ch,
-            stride,
-            data,
-        })
-    }
-
-    fn prefetch_neighbors(
-        &mut self,
-        source_idx: usize,
-        chunk_idx: u32,
-        cache: &mut GlobalChunkCache,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Spatial locality hint: scanline/bilinear sampling usually touches these
-        // neighboring chunks immediately after the current one.
-        let idx = chunk_idx as usize;
-        let cx = idx % self.chunks_across;
-        let cy = idx / self.chunks_across;
-        if cy >= self.chunks_down {
-            return Ok(());
-        }
-
-        let mut candidates = Vec::with_capacity(3);
-        if cx + 1 < self.chunks_across {
-            candidates.push((cy * self.chunks_across + (cx + 1)) as u32);
-        }
-        if cy + 1 < self.chunks_down {
-            candidates.push((((cy + 1) * self.chunks_across) + cx) as u32);
-            if cx + 1 < self.chunks_across {
-                candidates.push((((cy + 1) * self.chunks_across) + (cx + 1)) as u32);
-            }
-        }
-
-        for neighbor_idx in candidates {
-            if neighbor_idx as usize >= self.chunk_count {
-                continue;
-            }
-            let neighbor_key = ChunkKey {
-                source_idx,
-                chunk_idx: neighbor_idx,
-            };
-            if cache.contains(neighbor_key) {
-                continue;
-            }
-            let chunk = self.read_chunk_data(neighbor_idx)?;
-            cache.insert(neighbor_key, chunk);
-        }
-        Ok(())
     }
 }
 
@@ -199,12 +107,13 @@ fn pixel_from_chunk(chunk: &ChunkData, lx: usize, ly: usize) -> Option<[u8; 4]> 
 }
 
 impl SourceSampler {
+    /// Sample a pixel using pre-loaded chunk data from the batch map.
     pub(super) fn sample_pixel_opt(
         &mut self,
         source_idx: usize,
         xi: isize,
         yi: isize,
-        cache: &mut GlobalChunkCache,
+        chunk_map: &HashMap<ChunkKey, ChunkData>,
     ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
         match &mut self.reader {
             SourceReader::Chunked(s) => {
@@ -215,16 +124,9 @@ impl SourceSampler {
                     source_idx,
                     chunk_idx,
                 };
-                // Decode only when missing in cache; neighboring pixels tend to hit.
-                if !cache.contains(key) {
-                    let chunk = s.read_chunk_data(chunk_idx)?;
-                    cache.insert(key, chunk);
-                    // Warm likely next chunks (right, down, diagonal) to reduce read stalls.
-                    s.prefetch_neighbors(source_idx, chunk_idx, cache)?;
-                }
-                // Return RGBA from cached decoded chunk bytes.
-                Ok(cache
-                    .get(key)
+                // Look up from pre-loaded chunk map (pure CPU, no I/O)
+                Ok(chunk_map
+                    .get(&key)
                     .and_then(|chunk| pixel_from_chunk(chunk, lx, ly)))
             }
             SourceReader::FullDeferred(raster_opt) => {
