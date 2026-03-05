@@ -20,7 +20,7 @@ The standard [`tiff`](https://crates.io/crates/tiff) crate provides synchronous,
 |---------|--------|
 | Byte order | Little-endian (`II`) and big-endian (`MM`) |
 | Organization | Strips and tiles |
-| Compression | None (1), LZW (5), Deflate (8 / 32946), JPEG (7) |
+| Compression | None (1), LZW (5), Deflate (8 / 32946), PackBits (32773) |
 | Sample types | `u8`, `u16`, `u32`, `i8`, `i16`, `i32`, `f32`, `f64` |
 | GeoTIFF tags | ModelTiepoint, ModelPixelScale, ModelTransformation, GeoKeyDirectory |
 
@@ -75,7 +75,7 @@ tiff-compio/src/
   tag.rs           — Tag ID constants and TagValue enum
   ifd.rs           — IFD entry parsing and tag value resolution
   chunk.rs         — ChunkLayout (strips/tiles) and spatial indexing
-  decompress.rs    — Decompression dispatch (None, LZW, Deflate, JPEG)
+  decompress.rs    — Decompression dispatch (None, LZW, Deflate, PackBits)
 ```
 
 ### Reading pipeline
@@ -84,7 +84,7 @@ tiff-compio/src/
 2. **IFD** (variable size) — reads entry count, N x 12-byte entries, and next IFD pointer. All tag values are **eagerly resolved** during this step: inline values (≤4 bytes) are decoded from entries, and out-of-line values are fetched via positional reads. Results are stored in a `HashMap<u16, TagValue>` keyed by tag ID.
 3. **Tag lookup** — after construction, `find_tag`, `dimensions`, and `chunk_layout` are all **synchronous** `HashMap` lookups with no I/O.
 4. **Chunk layout** — computed once from the resolved tags. Unifies strips and tiles into a common `ChunkLayout` structure with offset/bytecount arrays.
-5. **Chunk reading** — positional read of compressed bytes, followed by synchronous decompression (LZW/Deflate/JPEG).
+5. **Chunk reading** — positional read of compressed bytes, followed by synchronous decompression (LZW/Deflate/PackBits).
 
 ### Design decisions
 
@@ -109,5 +109,4 @@ Integration tests use real TIFF images from the [`image-tiff`](https://github.co
 | `compio` | Async runtime with IOCP/io_uring backend |
 | `weezl` | LZW decompression |
 | `flate2` | Deflate/zlib decompression |
-| `zune-jpeg` | JPEG decompression |
 | `thiserror` | Error type derivation |

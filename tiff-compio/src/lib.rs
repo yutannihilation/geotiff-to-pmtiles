@@ -21,7 +21,7 @@
 //!
 //! - **Byte order:** Little-endian (`II`) and big-endian (`MM`).
 //! - **Organization:** Both strip-based and tile-based TIFF images.
-//! - **Compression:** None (1), LZW (5), Deflate (8 / 32946), JPEG (7).
+//! - **Compression:** None (1), LZW (5), Deflate (8 / 32946), PackBits (32773).
 //! - **GeoTIFF tags:** ModelTiepoint, ModelPixelScale, ModelTransformation, GeoKeyDirectory.
 //!
 //! # Usage
@@ -183,9 +183,8 @@ impl<R: AsyncReadAt> TiffReader<R> {
         let offset = layout.offsets[idx as usize];
         let byte_count = layout.byte_counts[idx as usize];
 
-        let nominal_chunk_bytes = layout.chunk_width as usize
-            * layout.chunk_height as usize
-            * layout.chunk_bytes_per_pixel();
+        let nominal_chunk_bytes =
+            layout.chunk_width as usize * layout.chunk_height as usize * layout.bytes_per_pixel;
 
         if byte_count == 0 {
             // Empty chunk — return zeros with full nominal tile dimensions
@@ -204,7 +203,7 @@ impl<R: AsyncReadAt> TiffReader<R> {
             nominal_chunk_bytes,
             layout.predictor,
             bytes_per_sample(&layout.bits_per_sample),
-            layout.chunk_samples_per_pixel(),
+            layout.samples_per_pixel as usize,
             layout.chunk_width,
             self.byte_order,
         )
@@ -222,10 +221,6 @@ impl<R: AsyncReadAt> TiffReader<R> {
     /// [`read_chunk`](TiffReader::read_chunk) to control memory usage and enable
     /// concurrent processing.
     pub async fn read_image(&self, layout: &ChunkLayout) -> Result<Vec<u8>, TiffError> {
-        if layout.is_planar() {
-            return self.read_image_planar(layout).await;
-        }
-
         let bpp = layout.bytes_per_pixel;
         let row_bytes = layout.image_width as usize * bpp;
         let mut image = vec![0u8; layout.image_height as usize * row_bytes];
@@ -254,48 +249,6 @@ impl<R: AsyncReadAt> TiffReader<R> {
                 let src_start = y * src_row_bytes;
                 image[dst_start..dst_start + copy_len]
                     .copy_from_slice(&chunk_data[src_start..src_start + copy_len]);
-            }
-        }
-
-        Ok(image)
-    }
-
-    /// Read a planar TIFF (PlanarConfiguration=2) and interleave the planes
-    /// into a chunky pixel buffer matching what a chunky TIFF would produce.
-    async fn read_image_planar(&self, layout: &ChunkLayout) -> Result<Vec<u8>, TiffError> {
-        let bps = bytes_per_sample(&layout.bits_per_sample);
-        let bpp = layout.bytes_per_pixel;
-        let row_bytes = layout.image_width as usize * bpp;
-        let mut image = vec![0u8; layout.image_height as usize * row_bytes];
-
-        // In planar mode, strips/tiles are grouped by sample plane:
-        // [plane0_chunk0, plane0_chunk1, ..., plane1_chunk0, plane1_chunk1, ...]
-        let chunks_per_plane = layout.chunks_down * layout.chunks_across;
-
-        for idx in 0..layout.chunk_count {
-            let plane = idx / chunks_per_plane;
-            let chunk_in_plane = idx % chunks_per_plane;
-
-            let chunk_data = self.read_chunk(layout, idx).await?;
-            let (chunk_w, chunk_h) = layout.chunk_data_dimensions(chunk_in_plane);
-
-            let col = (chunk_in_plane % layout.chunks_across) * layout.chunk_width;
-            let row = (chunk_in_plane / layout.chunks_across) * layout.chunk_height;
-
-            let src_row_bytes = layout.chunk_width as usize * bps;
-
-            for y in 0..chunk_h as usize {
-                let img_row = row as usize + y;
-                if img_row >= layout.image_height as usize {
-                    break;
-                }
-                for x in 0..chunk_w as usize {
-                    let src_off = y * src_row_bytes + x * bps;
-                    let dst_off =
-                        img_row * row_bytes + (col as usize + x) * bpp + plane as usize * bps;
-                    image[dst_off..dst_off + bps]
-                        .copy_from_slice(&chunk_data[src_off..src_off + bps]);
-                }
             }
         }
 

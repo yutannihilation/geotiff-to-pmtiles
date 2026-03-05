@@ -149,13 +149,6 @@ async fn dimensions_lzw() {
     verify_dimensions(&path).await;
 }
 
-#[compio::test]
-async fn dimensions_tiled_jpeg() {
-    let path = test_images_dir().join("tiled-jpeg-rgb-u8.tif");
-    assert!(path.exists(), "fixture missing: {}", path.display());
-    verify_dimensions(&path).await;
-}
-
 // ============================================================================
 // Full pixel data comparison tests
 // ============================================================================
@@ -262,52 +255,6 @@ async fn pixels_no_rows_per_strip() {
     let path = test_images_dir().join("no_rows_per_strip.tiff");
     assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
-}
-
-/// Uncompressed, 8-bit grayscale with alpha (PlanarConfiguration=2).
-///
-/// The reference `tiff` crate only reads the first plane for planar TIFFs
-/// (documented bug), so we verify independently: check that the first plane
-/// (extracted from our interleaved output) matches the reference single-plane
-/// output, and verify the total interleaved size is correct.
-#[compio::test]
-async fn pixels_gray_alpha() {
-    let path = test_images_dir().join("minisblack-2c-8b-alpha.tiff");
-    assert!(path.exists(), "fixture missing: {}", path.display());
-
-    // tiff-compio: reads all planes and interleaves them
-    let file = compio::fs::File::open(&path).await.unwrap();
-    let reader = TiffReader::new(file).await.unwrap();
-    let layout = reader.chunk_layout().unwrap();
-    let compio_bytes = reader.read_image(&layout).await.unwrap();
-
-    let (w, h) = reader.dimensions().unwrap();
-    let spp = layout.samples_per_pixel as usize;
-    assert_eq!(spp, 2, "expected 2 samples per pixel (gray + alpha)");
-    assert_eq!(
-        compio_bytes.len(),
-        w as usize * h as usize * spp,
-        "interleaved output should have width * height * samples_per_pixel bytes"
-    );
-
-    // Reference crate: only returns first plane (gray) for planar TIFFs
-    let file = std::fs::File::open(&path).unwrap();
-    let mut decoder = Decoder::new(file).unwrap();
-    let ref_result = decoder.read_image().unwrap();
-    let ref_bytes: Vec<u8> = match ref_result {
-        tiff::decoder::DecodingResult::U8(v) => v,
-        _ => panic!("expected U8 decoding result"),
-    };
-    assert_eq!(ref_bytes.len(), w as usize * h as usize);
-
-    // Extract the gray channel from our interleaved output and compare
-    let gray_from_compio: Vec<u8> = compio_bytes.iter().step_by(spp).copied().collect();
-    assert_eq!(
-        gray_from_compio,
-        ref_bytes,
-        "gray plane mismatch for {}",
-        path.display()
-    );
 }
 
 /// Uncompressed, signed 8-bit.

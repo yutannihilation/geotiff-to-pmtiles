@@ -7,8 +7,8 @@
 //! |-------|------|-------|
 //! | 1 | None | — (passthrough) |
 //! | 5 | LZW | [`weezl`] |
-//! | 7 | JPEG | [`zune_jpeg`] |
 //! | 8, 32946 | Deflate/zlib | [`flate2`] |
+//! | 32773 | PackBits | — (built-in) |
 //!
 //! Decompression is **synchronous** and CPU-bound. It runs after the async read
 //! completes, on the same thread. This avoids the overhead of spawning to a thread
@@ -29,7 +29,7 @@ use crate::error::TiffError;
 /// # Arguments
 ///
 /// - `data` — raw compressed bytes read from the file.
-/// - `compression` — TIFF compression tag value (1, 5, 7, 8, or 32946).
+/// - `compression` — TIFF compression tag value (1, 5, 8, 32773, or 32946).
 /// - `expected_size` — expected decompressed size in bytes. Used for pre-allocation
 ///   and for zero-padding short LZW output.
 /// - `predictor` — TIFF predictor tag value (1=None, 2=Horizontal differencing).
@@ -43,7 +43,7 @@ use crate::error::TiffError;
 /// - [`TiffError::Unsupported`] for unknown compression types or predictor values.
 /// - [`TiffError::Decompress`] if the codec fails.
 #[allow(clippy::too_many_arguments)]
-pub fn decompress(
+pub(crate) fn decompress(
     data: Vec<u8>,
     compression: u16,
     expected_size: usize,
@@ -65,10 +65,6 @@ pub fn decompress(
         8 | 32946 => {
             // Deflate (both old-style 32946 and new-style 8)
             decompress_deflate(&data, expected_size)?
-        }
-        7 => {
-            // JPEG — predictor is not applied to JPEG
-            return decompress_jpeg(&data);
         }
         32773 => {
             // PackBits (Apple Macintosh run-length encoding)
@@ -277,14 +273,6 @@ fn decompress_packbits(data: &[u8], expected_size: usize) -> Result<Vec<u8>, Tif
         // n == -128: no-op
     }
     Ok(result)
-}
-
-fn decompress_jpeg(data: &[u8]) -> Result<Vec<u8>, TiffError> {
-    let cursor = std::io::Cursor::new(data);
-    let mut decoder = zune_jpeg::JpegDecoder::new(cursor);
-    decoder
-        .decode()
-        .map_err(|e| TiffError::Decompress(format!("JPEG: {e}")))
 }
 
 #[cfg(test)]
