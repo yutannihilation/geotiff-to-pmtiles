@@ -1,12 +1,12 @@
 use super::NoDataSpec;
 
 /// Parse a string as a u8, also accepting float-style strings like `"0.0"` or `"255.0"`
-/// by truncating to integer. Returns `None` for values outside the u8 range.
+/// as long as they represent an integer value in the `u8` range. Returns `None` otherwise.
 fn parse_u8_lenient(s: &str) -> Option<u8> {
     if let Ok(v) = s.parse::<u8>() {
         return Some(v);
     }
-    // Try parsing as float and truncating (handles GDAL-style "0.0", "255.0", etc.)
+    // Try parsing as float and accepting only integer-valued values (handles GDAL-style "0.0", "255.0", etc.)
     if let Ok(f) = s.parse::<f64>()
         && (0.0..=255.0).contains(&f)
         && f.fract() == 0.0
