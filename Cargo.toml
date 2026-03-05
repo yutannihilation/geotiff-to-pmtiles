@@ -3,7 +3,7 @@ members = ["."]
 
 [package]
 name = "geotiff-to-pmtiles"
-version = "0.0.11-rc.1"
+version = "0.0.11"
 edition = "2024"
 repository = "https://github.com/yutannihilation/geotiff-to-pmtiles"
 autobins = false
