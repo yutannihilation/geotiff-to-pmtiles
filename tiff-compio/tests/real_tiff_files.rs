@@ -13,38 +13,20 @@
 use std::path::{Path, PathBuf};
 
 use tiff::decoder::Decoder;
-use tiff::tags::Tag;
 use tiff_compio::{TiffReader, tag};
 
-/// Path to the image-tiff test images directory.
+/// Path to the test images directory (`tests/images/`).
 fn test_images_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("images")
-}
-
-/// Path to test images under `tests/images/` (e.g. GDAL-generated fixtures).
-fn test_fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("images")
 }
 
-/// Open a TIFF with the reference `tiff` crate and return (width, height, compression, chunk_type).
-fn reference_info(path: &Path) -> (u32, u32, u16) {
+/// Open a TIFF with the reference `tiff` crate and return (width, height).
+fn reference_dims(path: &Path) -> (u32, u32) {
     let file = std::fs::File::open(path).unwrap();
     let mut decoder = Decoder::new(file).unwrap();
-    let (w, h) = decoder.dimensions().unwrap();
-    let compression = decoder
-        .get_tag(Tag::Compression)
-        .ok()
-        .and_then(|v| {
-            use tiff::decoder::ifd::Value;
-            match v {
-                Value::Short(v) => Some(v),
-                _ => None,
-            }
-        })
-        .unwrap_or(1);
-    (w, h, compression)
+    decoder.dimensions().unwrap()
 }
 
 /// Open a TIFF with tiff-compio and verify dimensions match the reference.
@@ -53,7 +35,7 @@ async fn verify_dimensions(path: &Path) {
     let reader = TiffReader::new(file).await.unwrap();
     let (compio_w, compio_h) = reader.dimensions().unwrap();
 
-    let (ref_w, ref_h, _) = reference_info(path);
+    let (ref_w, ref_h) = reference_dims(path);
     assert_eq!(
         (compio_w, compio_h),
         (ref_w, ref_h),
@@ -64,36 +46,53 @@ async fn verify_dimensions(path: &Path) {
 
 /// Open a TIFF with tiff-compio, read all chunks, and verify the assembled image
 /// matches the reference `tiff` crate's decoded output.
+///
+/// Note: tiff-compio returns raw bytes in file byte order, while the reference
+/// `tiff` crate decodes to native-endian typed values. We serialize the reference
+/// values using the file's byte order so both sides match.
 async fn verify_pixel_data(path: &Path) {
-    // Reference decode
+    // tiff-compio decode (do this first to get byte order)
+    let file = compio::fs::File::open(path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let byte_order = reader.byte_order();
+    let layout = reader.chunk_layout().unwrap();
+    let compio_bytes = reader.read_image(&layout).await.unwrap();
+
+    let is_le = byte_order == tiff_compio::ByteOrder::LittleEndian;
+
+    // Reference decode — serialize to the TIFF file's byte order for comparison
     let file = std::fs::File::open(path).unwrap();
     let mut decoder = Decoder::new(file).unwrap();
     let ref_result = decoder.read_image().unwrap();
-    let ref_bytes = match ref_result {
+    macro_rules! to_file_order {
+        ($v:expr, $is_le:expr) => {
+            $v.iter()
+                .flat_map(|x| {
+                    if $is_le {
+                        x.to_le_bytes()
+                    } else {
+                        x.to_be_bytes()
+                    }
+                })
+                .collect()
+        };
+    }
+    let ref_bytes: Vec<u8> = match ref_result {
         tiff::decoder::DecodingResult::U8(v) => v,
-        tiff::decoder::DecodingResult::U16(v) => {
-            // Convert to bytes (native endian) for comparison
-            v.iter().flat_map(|x| x.to_ne_bytes()).collect()
-        }
-        tiff::decoder::DecodingResult::U32(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
         tiff::decoder::DecodingResult::I8(v) => v.iter().map(|x| *x as u8).collect(),
-        tiff::decoder::DecodingResult::I16(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
-        tiff::decoder::DecodingResult::I32(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
-        tiff::decoder::DecodingResult::F32(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
-        tiff::decoder::DecodingResult::F64(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
-        tiff::decoder::DecodingResult::U64(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
-        tiff::decoder::DecodingResult::I64(v) => v.iter().flat_map(|x| x.to_ne_bytes()).collect(),
+        tiff::decoder::DecodingResult::U16(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::I16(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::U32(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::I32(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::F32(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::F64(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::U64(v) => to_file_order!(v, is_le),
+        tiff::decoder::DecodingResult::I64(v) => to_file_order!(v, is_le),
         tiff::decoder::DecodingResult::F16(v) => {
-            // f16 → 2 bytes each, native endian
-            v.iter().flat_map(|x| x.to_bits().to_ne_bytes()).collect()
+            let bits: Vec<u16> = v.iter().map(|x| x.to_bits()).collect();
+            to_file_order!(bits, is_le)
         }
     };
-
-    // tiff-compio decode
-    let file = compio::fs::File::open(path).await.unwrap();
-    let reader = TiffReader::new(file).await.unwrap();
-    let layout = reader.chunk_layout().unwrap();
-    let compio_bytes = reader.read_image(&layout).await.unwrap();
 
     assert_eq!(
         compio_bytes.len(),
@@ -118,60 +117,42 @@ async fn verify_pixel_data(path: &Path) {
 #[compio::test]
 async fn dimensions_rgb_8b_strip() {
     let path = test_images_dir().join("rgb-3c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_dimensions(&path).await;
 }
 
 #[compio::test]
 async fn dimensions_minisblack_8b() {
     let path = test_images_dir().join("minisblack-1c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_dimensions(&path).await;
 }
 
 #[compio::test]
 async fn dimensions_minisblack_16b() {
     let path = test_images_dir().join("minisblack-1c-16b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_dimensions(&path).await;
 }
 
 #[compio::test]
 async fn dimensions_tiled_rgb_u8() {
     let path = test_images_dir().join("tiled-rgb-u8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_dimensions(&path).await;
 }
 
 #[compio::test]
 async fn dimensions_lzw() {
     let path = test_images_dir().join("quad-lzw-compat.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_dimensions(&path).await;
 }
 
 #[compio::test]
 async fn dimensions_tiled_jpeg() {
     let path = test_images_dir().join("tiled-jpeg-rgb-u8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_dimensions(&path).await;
 }
 
@@ -183,10 +164,7 @@ async fn dimensions_tiled_jpeg() {
 #[compio::test]
 async fn pixels_rgb_8b_strip_uncompressed() {
     let path = test_images_dir().join("rgb-3c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -194,10 +172,7 @@ async fn pixels_rgb_8b_strip_uncompressed() {
 #[compio::test]
 async fn pixels_minisblack_8b() {
     let path = test_images_dir().join("minisblack-1c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -205,10 +180,7 @@ async fn pixels_minisblack_8b() {
 #[compio::test]
 async fn pixels_minisblack_16b() {
     let path = test_images_dir().join("minisblack-1c-16b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -216,10 +188,7 @@ async fn pixels_minisblack_16b() {
 #[compio::test]
 async fn pixels_rgb_16b_strip() {
     let path = test_images_dir().join("rgb-3c-16b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -227,10 +196,7 @@ async fn pixels_rgb_16b_strip() {
 #[compio::test]
 async fn pixels_tiled_rgb_u8() {
     let path = test_images_dir().join("tiled-rgb-u8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -238,32 +204,47 @@ async fn pixels_tiled_rgb_u8() {
 #[compio::test]
 async fn pixels_tiled_rect_rgb_u8() {
     let path = test_images_dir().join("tiled-rect-rgb-u8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
-/// LZW-compressed, strip-based.
+/// LZW-compressed, strip-based (old-style LSB bit order).
+///
+/// This file uses LSB bit order for LZW, which the reference `tiff` crate does
+/// not support (`read_image` fails with InvalidCode). We verify our decode
+/// independently: check that decoding succeeds, output size is correct, and
+/// pixel values are plausible (not all zeros).
 #[compio::test]
 async fn pixels_lzw_strip() {
     let path = test_images_dir().join("quad-lzw-compat.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
-    verify_pixel_data(&path).await;
+    assert!(path.exists(), "fixture missing: {}", path.display());
+
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let (w, h) = reader.dimensions().unwrap();
+    let layout = reader.chunk_layout().unwrap();
+    let pixels = reader.read_image(&layout).await.unwrap();
+
+    let expected_len = w as usize * h as usize * layout.bytes_per_pixel;
+    assert_eq!(
+        pixels.len(),
+        expected_len,
+        "decoded size mismatch: got {} expected {}",
+        pixels.len(),
+        expected_len
+    );
+    // Verify we actually decoded something (not all zeros from padding)
+    assert!(
+        pixels.iter().any(|&b| b != 0),
+        "decoded data is all zeros — likely a decode failure"
+    );
 }
 
 /// LZW-compressed from issue 69 regression test.
 #[compio::test]
 async fn pixels_lzw_issue69() {
     let path = test_images_dir().join("issue_69_lzw.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -271,10 +252,7 @@ async fn pixels_lzw_issue69() {
 #[compio::test]
 async fn pixels_tiled_oversize() {
     let path = test_images_dir().join("tiled-oversize-gray-i8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -282,32 +260,61 @@ async fn pixels_tiled_oversize() {
 #[compio::test]
 async fn pixels_no_rows_per_strip() {
     let path = test_images_dir().join("no_rows_per_strip.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
-/// Uncompressed, 8-bit grayscale with alpha.
+/// Uncompressed, 8-bit grayscale with alpha (PlanarConfiguration=2).
+///
+/// The reference `tiff` crate only reads the first plane for planar TIFFs
+/// (documented bug), so we verify independently: check that the first plane
+/// (extracted from our interleaved output) matches the reference single-plane
+/// output, and verify the total interleaved size is correct.
 #[compio::test]
 async fn pixels_gray_alpha() {
     let path = test_images_dir().join("minisblack-2c-8b-alpha.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
-    verify_pixel_data(&path).await;
+    assert!(path.exists(), "fixture missing: {}", path.display());
+
+    // tiff-compio: reads all planes and interleaves them
+    let file = compio::fs::File::open(&path).await.unwrap();
+    let reader = TiffReader::new(file).await.unwrap();
+    let layout = reader.chunk_layout().unwrap();
+    let compio_bytes = reader.read_image(&layout).await.unwrap();
+
+    let (w, h) = reader.dimensions().unwrap();
+    let spp = layout.samples_per_pixel as usize;
+    assert_eq!(spp, 2, "expected 2 samples per pixel (gray + alpha)");
+    assert_eq!(
+        compio_bytes.len(),
+        w as usize * h as usize * spp,
+        "interleaved output should have width * height * samples_per_pixel bytes"
+    );
+
+    // Reference crate: only returns first plane (gray) for planar TIFFs
+    let file = std::fs::File::open(&path).unwrap();
+    let mut decoder = Decoder::new(file).unwrap();
+    let ref_result = decoder.read_image().unwrap();
+    let ref_bytes: Vec<u8> = match ref_result {
+        tiff::decoder::DecodingResult::U8(v) => v,
+        _ => panic!("expected U8 decoding result"),
+    };
+    assert_eq!(ref_bytes.len(), w as usize * h as usize);
+
+    // Extract the gray channel from our interleaved output and compare
+    let gray_from_compio: Vec<u8> = compio_bytes.iter().step_by(spp).copied().collect();
+    assert_eq!(
+        gray_from_compio,
+        ref_bytes,
+        "gray plane mismatch for {}",
+        path.display()
+    );
 }
 
 /// Uncompressed, signed 8-bit.
 #[compio::test]
 async fn pixels_int8() {
     let path = test_images_dir().join("int8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -315,10 +322,7 @@ async fn pixels_int8() {
 #[compio::test]
 async fn pixels_int16() {
     let path = test_images_dir().join("int16.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     verify_pixel_data(&path).await;
 }
 
@@ -330,10 +334,7 @@ async fn pixels_int16() {
 #[compio::test]
 async fn tag_bits_per_sample_rgb() {
     let path = test_images_dir().join("rgb-3c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
     let bps = reader
@@ -348,10 +349,7 @@ async fn tag_bits_per_sample_rgb() {
 #[compio::test]
 async fn tag_samples_per_pixel_rgb() {
     let path = test_images_dir().join("rgb-3c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
     let spp = reader
@@ -366,10 +364,7 @@ async fn tag_samples_per_pixel_rgb() {
 #[compio::test]
 async fn tag_compression_lzw() {
     let path = test_images_dir().join("quad-lzw-compat.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
     let compression = reader
@@ -384,10 +379,7 @@ async fn tag_compression_lzw() {
 #[compio::test]
 async fn tag_tile_dimensions() {
     let path = test_images_dir().join("tiled-rgb-u8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
 
@@ -415,10 +407,7 @@ async fn tag_tile_dimensions() {
 #[compio::test]
 async fn chunk_layout_strips() {
     let path = test_images_dir().join("rgb-3c-8b.tiff");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
     let layout = reader.chunk_layout().unwrap();
@@ -437,7 +426,7 @@ async fn chunk_layout_strips() {
 /// Verify GDAL_NODATA tag (42113) with value "0".
 #[compio::test]
 async fn tag_gdal_nodata_zero() {
-    let path = test_fixtures_dir().join("gdal-nodata-0.tif");
+    let path = test_images_dir().join("gdal-nodata-0.tif");
     assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
@@ -452,7 +441,7 @@ async fn tag_gdal_nodata_zero() {
 /// Verify GDAL_NODATA tag (42113) with value "255".
 #[compio::test]
 async fn tag_gdal_nodata_255() {
-    let path = test_fixtures_dir().join("gdal-nodata-255.tif");
+    let path = test_images_dir().join("gdal-nodata-255.tif");
     assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
@@ -467,7 +456,7 @@ async fn tag_gdal_nodata_255() {
 /// Verify GDAL_NODATA tag is absent from files that don't have it.
 #[compio::test]
 async fn tag_gdal_nodata_absent() {
-    let path = test_fixtures_dir().join("gdal-no-nodata.tif");
+    let path = test_images_dir().join("gdal-no-nodata.tif");
     assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
@@ -481,10 +470,7 @@ async fn tag_gdal_nodata_absent() {
 #[compio::test]
 async fn chunk_layout_tiles() {
     let path = test_images_dir().join("tiled-rgb-u8.tif");
-    if !path.exists() {
-        eprintln!("Skipping: {}", path.display());
-        return;
-    }
+    assert!(path.exists(), "fixture missing: {}", path.display());
     let file = compio::fs::File::open(&path).await.unwrap();
     let reader = TiffReader::new(file).await.unwrap();
     let layout = reader.chunk_layout().unwrap();

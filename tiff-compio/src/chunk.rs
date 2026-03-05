@@ -72,7 +72,8 @@ pub struct ChunkLayout {
     pub chunks_across: u32,
     /// Number of chunk rows.
     pub chunks_down: u32,
-    /// Total number of chunks (`chunks_across * chunks_down`).
+    /// Total number of chunks. For chunky TIFFs this equals `chunks_across * chunks_down`.
+    /// For planar TIFFs this is `chunks_across * chunks_down * samples_per_pixel`.
     pub chunk_count: u32,
     /// File offset of each chunk's compressed data.
     pub offsets: Vec<u64>,
@@ -91,6 +92,8 @@ pub struct ChunkLayout {
     pub predictor: u16,
     /// TIFF SampleFormat tag value (1=uint, 2=int, 3=float, 4=undefined).
     pub sample_format: u16,
+    /// TIFF PlanarConfiguration tag value (1=chunky/interleaved, 2=planar/separate).
+    pub planar_configuration: u16,
 }
 
 impl ChunkLayout {
@@ -143,6 +146,12 @@ impl ChunkLayout {
             .and_then(|v| v.first().copied())
             .unwrap_or(1); // default: unsigned integer
 
+        let planar_configuration = reader
+            .find_tag(tag::PLANAR_CONFIGURATION)
+            .map(|v| v.into_u16())
+            .transpose()?
+            .unwrap_or(1); // default: chunky/interleaved
+
         // Determine strip vs tile
         let has_tile_width = reader.find_tag(tag::TILE_WIDTH).is_some();
 
@@ -156,6 +165,7 @@ impl ChunkLayout {
                 samples_per_pixel,
                 predictor,
                 sample_format,
+                planar_configuration,
             )
         } else {
             Self::from_strip_tags(
@@ -167,6 +177,7 @@ impl ChunkLayout {
                 samples_per_pixel,
                 predictor,
                 sample_format,
+                planar_configuration,
             )
         }
     }
@@ -181,6 +192,7 @@ impl ChunkLayout {
         samples_per_pixel: u16,
         predictor: u16,
         sample_format: u16,
+        planar_configuration: u16,
     ) -> Result<Self, TiffError> {
         let tile_width = reader
             .find_tag(tag::TILE_WIDTH)
@@ -222,6 +234,7 @@ impl ChunkLayout {
             bytes_per_pixel,
             predictor,
             sample_format,
+            planar_configuration,
         })
     }
 
@@ -235,6 +248,7 @@ impl ChunkLayout {
         samples_per_pixel: u16,
         predictor: u16,
         sample_format: u16,
+        planar_configuration: u16,
     ) -> Result<Self, TiffError> {
         let rows_per_strip = reader
             .find_tag(tag::ROWS_PER_STRIP)
@@ -252,7 +266,11 @@ impl ChunkLayout {
             .into_u64_vec()?;
 
         let chunks_down = image_height.div_ceil(rows_per_strip);
-        let chunk_count = chunks_down; // strips span full width
+        let chunk_count = if planar_configuration == 2 {
+            chunks_down * samples_per_pixel as u32
+        } else {
+            chunks_down // strips span full width
+        };
 
         let bytes_per_pixel = samples_per_pixel as usize * bytes_per_sample(&bits_per_sample);
 
@@ -273,7 +291,38 @@ impl ChunkLayout {
             bytes_per_pixel,
             predictor,
             sample_format,
+            planar_configuration,
         })
+    }
+
+    /// Whether this image uses planar sample storage (PlanarConfiguration=2).
+    pub fn is_planar(&self) -> bool {
+        self.planar_configuration == 2
+    }
+
+    /// Bytes per pixel within a single chunk.
+    ///
+    /// For chunky TIFFs this equals `bytes_per_pixel` (all samples interleaved).
+    /// For planar TIFFs each chunk stores a single sample plane, so this returns
+    /// `bytes_per_sample` instead.
+    pub fn chunk_bytes_per_pixel(&self) -> usize {
+        if self.is_planar() {
+            bytes_per_sample(&self.bits_per_sample)
+        } else {
+            self.bytes_per_pixel
+        }
+    }
+
+    /// Samples per pixel within a single chunk.
+    ///
+    /// For chunky TIFFs this equals `samples_per_pixel`.
+    /// For planar TIFFs each chunk is a single sample plane, so this returns 1.
+    pub fn chunk_samples_per_pixel(&self) -> usize {
+        if self.is_planar() {
+            1
+        } else {
+            self.samples_per_pixel as usize
+        }
     }
 
     /// Returns the actual pixel dimensions `(width, height)` of the chunk at index `idx`.
@@ -324,6 +373,7 @@ mod tests {
             bytes_per_pixel: 3,
             predictor: 1,
             sample_format: 1,
+            planar_configuration: 1,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (256, 256));
@@ -350,6 +400,7 @@ mod tests {
             bytes_per_pixel: 3,
             predictor: 1,
             sample_format: 1,
+            planar_configuration: 1,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (44, 256)); // right edge
@@ -376,6 +427,7 @@ mod tests {
             bytes_per_pixel: 3,
             predictor: 1,
             sample_format: 1,
+            planar_configuration: 1,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (100, 100));
         assert_eq!(layout.chunk_data_dimensions(1), (100, 100));

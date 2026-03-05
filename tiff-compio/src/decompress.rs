@@ -70,6 +70,10 @@ pub fn decompress(
             // JPEG — predictor is not applied to JPEG
             return decompress_jpeg(&data);
         }
+        32773 => {
+            // PackBits (Apple Macintosh run-length encoding)
+            decompress_packbits(&data, expected_size)?
+        }
         other => return Err(TiffError::Unsupported(format!("compression type {other}"))),
     };
 
@@ -173,18 +177,64 @@ fn apply_horizontal_predictor(
 }
 
 fn decompress_lzw(data: &[u8], expected_size: usize) -> Result<Vec<u8>, TiffError> {
-    let mut decoder = weezl::decode::Decoder::new(weezl::BitOrder::Msb, 8);
-    let result = decoder
-        .decode(data)
-        .map_err(|e| TiffError::Decompress(format!("LZW: {e}")))?;
-    if result.len() < expected_size {
-        // Pad with zeros if LZW output is short (can happen with padding)
-        let mut padded = result;
-        padded.resize(expected_size, 0);
-        Ok(padded)
-    } else {
-        Ok(result)
+    // TIFF spec requires MSB bit order with early-change for LZW, but some
+    // older files use different variants. Try all combinations, reusing the
+    // output buffer across attempts:
+    let mut buf = vec![0u8; expected_size];
+    let attempts: [(weezl::BitOrder, bool); 4] = [
+        (weezl::BitOrder::Msb, true),  // standard TIFF LZW
+        (weezl::BitOrder::Lsb, true),  // old-style TIFF compatibility
+        (weezl::BitOrder::Msb, false), // non-early-change MSB
+        (weezl::BitOrder::Lsb, false), // non-early-change LSB
+    ];
+    let mut last_err = None;
+    for (bit_order, tiff_size_switch) in attempts {
+        match decompress_lzw_with(data, expected_size, bit_order, tiff_size_switch, &mut buf) {
+            Ok(result) => return Ok(result),
+            Err(e) => last_err = Some(e),
+        }
     }
+    Err(last_err.unwrap())
+}
+
+fn decompress_lzw_with(
+    data: &[u8],
+    expected_size: usize,
+    bit_order: weezl::BitOrder,
+    tiff_size_switch: bool,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<u8>, TiffError> {
+    // Use the streaming decode_bytes API so the decoder stops at the LZW EOI
+    // code and ignores any trailing bytes in the strip.
+    buf.clear();
+    buf.resize(expected_size, 0);
+    let mut decoder = if tiff_size_switch {
+        weezl::decode::Decoder::with_tiff_size_switch(bit_order, 8)
+    } else {
+        weezl::decode::Decoder::new(bit_order, 8)
+    };
+    let mut total_in = 0;
+    let mut total_out = 0;
+    loop {
+        let status = decoder.decode_bytes(&data[total_in..], &mut buf[total_out..]);
+        total_in += status.consumed_in;
+        total_out += status.consumed_out;
+        match status.status {
+            Ok(weezl::LzwStatus::Ok | weezl::LzwStatus::NoProgress) => {
+                if status.consumed_in == 0 && status.consumed_out == 0 {
+                    break;
+                }
+            }
+            Ok(weezl::LzwStatus::Done) => break,
+            Err(e) => return Err(TiffError::Decompress(format!("LZW: {e}"))),
+        }
+    }
+    let mut result = std::mem::take(buf);
+    result.truncate(total_out);
+    if result.len() < expected_size {
+        result.resize(expected_size, 0);
+    }
+    Ok(result)
 }
 
 fn decompress_deflate(data: &[u8], expected_size: usize) -> Result<Vec<u8>, TiffError> {
@@ -193,6 +243,39 @@ fn decompress_deflate(data: &[u8], expected_size: usize) -> Result<Vec<u8>, Tiff
     decoder
         .read_to_end(&mut result)
         .map_err(|e| TiffError::Decompress(format!("Deflate: {e}")))?;
+    Ok(result)
+}
+
+fn decompress_packbits(data: &[u8], expected_size: usize) -> Result<Vec<u8>, TiffError> {
+    let mut result = Vec::with_capacity(expected_size);
+    let mut i = 0;
+    while i < data.len() {
+        let n = data[i] as i8;
+        i += 1;
+        if n >= 0 {
+            // Copy next (n + 1) bytes literally
+            let count = n as usize + 1;
+            if i + count > data.len() {
+                return Err(TiffError::Decompress(
+                    "PackBits: unexpected end of data".into(),
+                ));
+            }
+            result.extend_from_slice(&data[i..i + count]);
+            i += count;
+        } else if n > -128 {
+            // Repeat next byte (1 - n) times
+            if i >= data.len() {
+                return Err(TiffError::Decompress(
+                    "PackBits: unexpected end of data".into(),
+                ));
+            }
+            let count = (1 - n as i16) as usize;
+            let byte = data[i];
+            i += 1;
+            result.resize(result.len() + count, byte);
+        }
+        // n == -128: no-op
+    }
     Ok(result)
 }
 
