@@ -195,7 +195,7 @@ async fn read_chunks_async(
             raw,
             bits_per_sample,
             sample_format,
-            layout.byte_order,
+            readers[key.source_idx].byte_order(),
         );
 
         let cw = cw as usize;

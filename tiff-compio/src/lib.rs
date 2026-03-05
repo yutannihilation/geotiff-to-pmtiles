@@ -205,7 +205,7 @@ impl<R: AsyncReadAt> TiffReader<R> {
             bytes_per_sample(&layout.bits_per_sample),
             layout.samples_per_pixel as usize,
             layout.chunk_width,
-            layout.byte_order,
+            self.byte_order,
         )
     }
 

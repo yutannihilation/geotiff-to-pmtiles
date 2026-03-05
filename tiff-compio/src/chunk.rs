@@ -19,7 +19,6 @@
 //! chunks, each of size `chunk_width × chunk_height` (with edge chunks potentially smaller).
 
 use crate::TiffReader;
-use crate::byte_order::ByteOrder;
 use crate::bytes_per_sample;
 use crate::error::TiffError;
 use crate::tag;
@@ -92,8 +91,6 @@ pub struct ChunkLayout {
     pub predictor: u16,
     /// TIFF SampleFormat tag value (1=uint, 2=int, 3=float, 4=undefined).
     pub sample_format: u16,
-    /// Byte order of the TIFF file (little-endian or big-endian).
-    pub byte_order: ByteOrder,
 }
 
 impl ChunkLayout {
@@ -114,7 +111,6 @@ impl ChunkLayout {
     /// - `RowsPerStrip`: defaults to `ImageLength` (single strip) if missing.
     pub fn from_reader<R: AsyncReadAt>(reader: &TiffReader<R>) -> Result<Self, TiffError> {
         let (image_width, image_height) = reader.dimensions()?;
-        let byte_order = reader.byte_order();
 
         let compression = reader
             .find_tag(tag::COMPRESSION)
@@ -160,7 +156,6 @@ impl ChunkLayout {
                 samples_per_pixel,
                 predictor,
                 sample_format,
-                byte_order,
             )
         } else {
             Self::from_strip_tags(
@@ -172,7 +167,6 @@ impl ChunkLayout {
                 samples_per_pixel,
                 predictor,
                 sample_format,
-                byte_order,
             )
         }
     }
@@ -187,7 +181,6 @@ impl ChunkLayout {
         samples_per_pixel: u16,
         predictor: u16,
         sample_format: u16,
-        byte_order: ByteOrder,
     ) -> Result<Self, TiffError> {
         let tile_width = reader
             .find_tag(tag::TILE_WIDTH)
@@ -229,7 +222,6 @@ impl ChunkLayout {
             bytes_per_pixel,
             predictor,
             sample_format,
-            byte_order,
         })
     }
 
@@ -243,7 +235,6 @@ impl ChunkLayout {
         samples_per_pixel: u16,
         predictor: u16,
         sample_format: u16,
-        byte_order: ByteOrder,
     ) -> Result<Self, TiffError> {
         let rows_per_strip = reader
             .find_tag(tag::ROWS_PER_STRIP)
@@ -282,7 +273,6 @@ impl ChunkLayout {
             bytes_per_pixel,
             predictor,
             sample_format,
-            byte_order,
         })
     }
 
@@ -334,7 +324,6 @@ mod tests {
             bytes_per_pixel: 3,
             predictor: 1,
             sample_format: 1,
-            byte_order: ByteOrder::LittleEndian,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (256, 256));
@@ -361,7 +350,6 @@ mod tests {
             bytes_per_pixel: 3,
             predictor: 1,
             sample_format: 1,
-            byte_order: ByteOrder::LittleEndian,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (256, 256));
         assert_eq!(layout.chunk_data_dimensions(1), (44, 256)); // right edge
@@ -388,7 +376,6 @@ mod tests {
             bytes_per_pixel: 3,
             predictor: 1,
             sample_format: 1,
-            byte_order: ByteOrder::LittleEndian,
         };
         assert_eq!(layout.chunk_data_dimensions(0), (100, 100));
         assert_eq!(layout.chunk_data_dimensions(1), (100, 100));

@@ -61,7 +61,7 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
                     chunk_raw,
                     bits_per_sample,
                     sample_format,
-                    layout.byte_order,
+                    reader.byte_order(),
                 );
                 let cw = cw as usize;
                 let ch = ch as usize;
@@ -103,7 +103,7 @@ pub(crate) fn load_raster(path: &std::path::Path) -> Result<Raster, Box<dyn std:
         image_raw,
         bits_per_sample,
         sample_format,
-        layout.byte_order,
+        reader.byte_order(),
     );
 
     let pixel_count = width.saturating_mul(height);

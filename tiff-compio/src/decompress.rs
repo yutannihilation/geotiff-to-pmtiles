@@ -133,12 +133,7 @@ fn apply_horizontal_predictor(
                             let prev = byte_order.read_u16(&row[prev_off..]);
                             let curr = byte_order.read_u16(&row[curr_off..]);
                             let result = curr.wrapping_add(prev);
-                            let bytes = match byte_order {
-                                ByteOrder::LittleEndian => result.to_le_bytes(),
-                                ByteOrder::BigEndian => result.to_be_bytes(),
-                            };
-                            row[curr_off] = bytes[0];
-                            row[curr_off + 1] = bytes[1];
+                            byte_order.write_u16(result, &mut row[curr_off..]);
                         }
                     }
                 }
@@ -155,14 +150,7 @@ fn apply_horizontal_predictor(
                             let prev = byte_order.read_u32(&row[prev_off..]);
                             let curr = byte_order.read_u32(&row[curr_off..]);
                             let result = curr.wrapping_add(prev);
-                            let bytes = match byte_order {
-                                ByteOrder::LittleEndian => result.to_le_bytes(),
-                                ByteOrder::BigEndian => result.to_be_bytes(),
-                            };
-                            row[curr_off] = bytes[0];
-                            row[curr_off + 1] = bytes[1];
-                            row[curr_off + 2] = bytes[2];
-                            row[curr_off + 3] = bytes[3];
+                            byte_order.write_u32(result, &mut row[curr_off..]);
                         }
                     }
                 }
