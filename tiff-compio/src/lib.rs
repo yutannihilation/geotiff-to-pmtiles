@@ -21,7 +21,7 @@
 //!
 //! - **Byte order:** Little-endian (`II`) and big-endian (`MM`).
 //! - **Organization:** Both strip-based and tile-based TIFF images.
-//! - **Compression:** None (1), LZW (5), Deflate (8 / 32946), JPEG (7).
+//! - **Compression:** None (1), LZW (5), Deflate (8 / 32946), PackBits (32773).
 //! - **GeoTIFF tags:** ModelTiepoint, ModelPixelScale, ModelTransformation, GeoKeyDirectory.
 //!
 //! # Usage

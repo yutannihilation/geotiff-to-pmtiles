@@ -78,7 +78,7 @@ pub struct ChunkLayout {
     pub offsets: Vec<u64>,
     /// Compressed byte count of each chunk.
     pub byte_counts: Vec<u64>,
-    /// TIFF compression tag value (1=None, 5=LZW, 7=JPEG, 8=Deflate).
+    /// TIFF compression tag value (1=None, 5=LZW, 8=Deflate, 32773=PackBits).
     pub compression: u16,
     /// Bits per sample for each channel (e.g., `[8, 8, 8]` for 8-bit RGB).
     pub bits_per_sample: Vec<u16>,

@@ -7,7 +7,6 @@ edition = "2024"
 compio = { version = "0.18", features = ["io", "runtime"] }
 weezl = "0.1"
 flate2 = "1"
-zune-jpeg = "0.5"
 thiserror = "2"
 
 [dev-dependencies]

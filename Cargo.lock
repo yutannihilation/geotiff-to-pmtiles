@@ -1555,7 +1555,6 @@ dependencies = [
  "thiserror",
  "tiff 0.11.3",
  "weezl",
- "zune-jpeg 0.5.12",
 ]
 
 [[package]]
