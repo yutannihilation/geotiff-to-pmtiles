@@ -59,7 +59,9 @@ pub(crate) fn load_source_metadata(
     let sources = paths
         .into_par_iter()
         .map(|path| -> Result<SourceMetadata, String> {
-            read_source_metadata(path, src_crs).map_err(|e| format!("failed to read metadata: {e}"))
+            let path_display = path.display().to_string();
+            read_source_metadata(path, src_crs)
+                .map_err(|e| format!("failed to read metadata for {path_display}: {e}"))
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -128,10 +130,7 @@ mod tests {
 
     fn assert_gdal_nodata(filename: &str, src_crs: Option<&str>, expected: Option<&str>) {
         let path = tiff_compio_images_dir().join(filename);
-        if !path.exists() {
-            eprintln!("Skipping: {}", path.display());
-            return;
-        }
+        assert!(path.exists(), "fixture missing: {}", path.display());
         let meta =
             read_source_metadata(path, src_crs).expect("read_source_metadata should succeed");
         assert_eq!(meta.gdal_nodata.as_deref().map(str::trim), expected);
