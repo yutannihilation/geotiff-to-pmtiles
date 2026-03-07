@@ -1,5 +1,6 @@
 [workspace]
 members = ["."]
+exclude = ["tools/generate-bench-data"]
 
 [package]
 name = "geotiff-to-pmtiles"
