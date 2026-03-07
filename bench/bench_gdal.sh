@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PMTILES_BIN="$SCRIPT_DIR/bench-data/pmtiles"
-GEOTIFF_BIN="geotiff-to-pmtiles"
+GEOTIFF_BIN="$SCRIPT_DIR/../target/release/geotiff-to-pmtiles"
 
 # Download pmtiles CLI if not present
 if [ ! -x "$PMTILES_BIN" ]; then
