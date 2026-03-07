@@ -465,7 +465,6 @@ pub fn convert(
     //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + AVIF encode
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
-    let avif_encoder = crate::resample::make_avif_encoder(avif_speed, avif_quality);
     let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
     let mut next_to_write = 0usize;
     let mut ready_by_write_idx = vec![None::<Option<Vec<u8>>>; total_tiles];
@@ -506,8 +505,9 @@ pub fn convert(
                                     return Ok(None);
                                 }
                                 Ok(Some(crate::resample::encode_avif(
-                                    &avif_encoder,
                                     &rgba,
+                                    avif_speed,
+                                    avif_quality,
                                 )?))
                             })
                             .map_err(|e| e.to_string());
