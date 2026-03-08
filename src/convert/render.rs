@@ -7,8 +7,6 @@ use super::TILE_SIZE;
 use super::cache::{ChunkData, ChunkKey};
 use super::source::SourceSampler;
 
-type NearestSample = ([u8; 4], f64);
-
 #[derive(Clone, Copy)]
 struct RowSampleCursor {
     source_idx: usize,
@@ -92,19 +90,13 @@ fn sample_nearest_multi(
     nodata: Option<NoDataSpec>,
     chunk_map: &HashMap<ChunkKey, ChunkData>,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
-    // Nearest policy across sources: choose globally nearest valid sample in raster pixel space.
-    let mut best: Option<NearestSample> = None;
+    // First source in input order that yields a valid (non-nodata) sample wins.
     for c in cursors {
-        if let Some((px, dist2)) =
-            sample_nearest_with_dist(samplers, c.source_idx, c.x, c.y, nodata, chunk_map)?
-        {
-            match best {
-                Some((_, d)) if d <= dist2 => {}
-                _ => best = Some((px, dist2)),
-            }
+        if let Some(px) = sample_nearest_opt(samplers, c.source_idx, c.x, c.y, nodata, chunk_map)? {
+            return Ok(px);
         }
     }
-    Ok(best.map(|(px, _)| px).unwrap_or([0, 0, 0, 0]))
+    Ok([0, 0, 0, 0])
 }
 
 fn sample_bilinear_multi(
@@ -123,36 +115,25 @@ fn sample_bilinear_multi(
     Ok([0, 0, 0, 0])
 }
 
-fn sample_nearest_with_dist(
+fn sample_nearest_opt(
     samplers: &mut [SourceSampler],
     source_idx: usize,
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
     chunk_map: &HashMap<ChunkKey, ChunkData>,
-) -> Result<Option<NearestSample>, Box<dyn std::error::Error>> {
-    let x0 = x.floor() as isize;
-    let y0 = y.floor() as isize;
-    let mut candidates = [(x0, y0), (x0 + 1, y0), (x0, y0 + 1), (x0 + 1, y0 + 1)];
-    candidates.sort_by(|(ax, ay), (bx, by)| {
-        let da = (*ax as f64 - x).powi(2) + (*ay as f64 - y).powi(2);
-        let db = (*bx as f64 - x).powi(2) + (*by as f64 - y).powi(2);
-        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    for (xi, yi) in candidates {
-        let Some(px) = samplers[source_idx].sample_pixel_opt(source_idx, xi, yi, chunk_map)? else {
-            continue;
-        };
-        if let Some(nd) = nodata
-            && nd.is_nodata(px)
-        {
-            continue;
-        }
-        let dist2 = (xi as f64 - x).powi(2) + (yi as f64 - y).powi(2);
-        return Ok(Some((px, dist2)));
+) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
+    let xi = x.round() as isize;
+    let yi = y.round() as isize;
+    let Some(px) = samplers[source_idx].sample_pixel_opt(source_idx, xi, yi, chunk_map)? else {
+        return Ok(None);
+    };
+    if let Some(nd) = nodata
+        && nd.is_nodata(px)
+    {
+        return Ok(None);
     }
-    Ok(None)
+    Ok(Some(px))
 }
 
 fn sample_bilinear_opt(

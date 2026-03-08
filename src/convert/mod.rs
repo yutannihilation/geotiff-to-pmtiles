@@ -505,10 +505,7 @@ pub fn convert(
                                 if rgba.chunks_exact(4).all(|px| px[3] == 0) {
                                     return Ok(None);
                                 }
-                                Ok(Some(crate::resample::encode_avif(
-                                    &avif_encoder,
-                                    &rgba,
-                                )?))
+                                Ok(Some(crate::resample::encode_avif(&avif_encoder, &rgba)?))
                             })
                             .map_err(|e| e.to_string());
 
