@@ -24,6 +24,16 @@ rgb = { version = "0.8.52", features = ["bytemuck"] }
 rayon = "1.11.0"
 glob = "0.3.2"
 
+[package.metadata.release]
+tag = true # create a single tag for the version (e.g. "v0.2.5")
+pre-release-replacements = [
+    { file = "CHANGELOG.md", search = "Unreleased", replace = "v{{version}}", min = 1 },
+    { file = "CHANGELOG.md", search = "\\.\\.\\.HEAD", replace = "...{{tag_name}}", exactly = 1 },
+    { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 1 },
+    { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n## [Unreleased] (ReleaseDate)\n", exactly = 1 },
+    { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/{{tag_name}}...HEAD", exactly = 1 },
+]
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
