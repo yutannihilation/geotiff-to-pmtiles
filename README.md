@@ -35,7 +35,7 @@ Options:
       --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 128]
       --quality <AVIF_QUALITY>   AVIF quality in the range 1..=100 (higher is better quality, larger files) [default: 55]
       --speed <AVIF_SPEED>       AVIF speed in the range 1..=10 (lower is slower but better compression) [default: 4]
-      --zlevel <PNG_ZLEVEL>      PNG compression level 0-9 (higher is slower but smaller) [default: 6]
+      --png-compression <PNG_COMPRESSION>  PNG compression preset [default: default] [possible values: fast, default, best]
   -h, --help                     Print help
 ```
 

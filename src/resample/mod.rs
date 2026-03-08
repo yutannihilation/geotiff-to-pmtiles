@@ -7,7 +7,6 @@ mod types;
 pub(crate) const TILE_SIZE: usize = 256;
 pub(crate) const DEFAULT_AVIF_QUALITY: u8 = 55;
 pub(crate) const DEFAULT_AVIF_SPEED: u8 = 4;
-pub(crate) const DEFAULT_PNG_ZLEVEL: u8 = 6;
 
 pub(crate) use georef::{
     TAG_PLANAR_CONFIGURATION, read_source_metadata, source_corners_merc_georef,

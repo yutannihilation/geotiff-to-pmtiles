@@ -52,4 +52,4 @@ Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before opening 
 - Commit format: `type(scope): summary` (e.g. `feat(conversion): add tile pyramid builder`)
 - Unit tests live in `#[cfg(test)] mod tests` next to the implementation
 - Error handling: `Result<T, Box<dyn std::error::Error>>`
-- Constants in `src/resample/mod.rs`: `TILE_SIZE=256`, `DEFAULT_AVIF_QUALITY=55`, `DEFAULT_AVIF_SPEED=4`, `DEFAULT_PNG_ZLEVEL=6`
+- Constants in `src/resample/mod.rs`: `TILE_SIZE=256`, `DEFAULT_AVIF_QUALITY=55`, `DEFAULT_AVIF_SPEED=4`

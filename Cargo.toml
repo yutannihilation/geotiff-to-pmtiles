@@ -16,13 +16,13 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
 tiff = "0.11"
+png = "0.17.16"
 pmtiles = { version = "0.20.0", default-features = false, features = ["write"] }
 proj-lite = { git = "https://github.com/yutannihilation/proj-rs-lite.git", rev = "15455f3813da307683e8619f88f09e9e5943fd1c", version = "0.1.0" }
 ravif = "0.13.0"
 rgb = { version = "0.8.52", features = ["bytemuck"] }
 rayon = "1.11.0"
 glob = "0.3.2"
-png = "0.17"
 
 # The profile that 'dist' will build with
 [profile.dist]

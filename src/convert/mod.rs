@@ -13,7 +13,7 @@ use proj_lite::Proj;
 use rayon::prelude::*;
 use tiff::decoder::Decoder;
 
-use crate::cli::{Resampling, TileFormat};
+use crate::cli::{PngCompression, Resampling, TileFormat};
 use crate::resample::{
     Georef, NoDataSpec, Pt, SourceMetadata, TAG_PLANAR_CONFIGURATION, TILE_SIZE, parse_nodata,
     source_corners_merc_georef, tile_bounds_webmerc, tile_corners_in_georef_raster,
@@ -38,7 +38,7 @@ pub struct ConvertOptions<'a> {
     pub tile_format: TileFormat,
     pub avif_quality: u8,
     pub avif_speed: u8,
-    pub png_zlevel: u8,
+    pub png_compression: PngCompression,
 }
 
 struct SourceSpec {
@@ -250,7 +250,7 @@ pub fn convert(
         tile_format,
         avif_quality,
         avif_speed,
-        png_zlevel,
+        png_compression,
     } = options;
     let cli_nodata = parse_nodata(nodata)?;
 
@@ -395,7 +395,7 @@ pub fn convert(
     println!("Zoom range: {min_zoom}..{max_zoom}");
     match tile_format {
         TileFormat::Avif => println!("Format: AVIF (quality={avif_quality}, speed={avif_speed})"),
-        TileFormat::Png => println!("Format: PNG (zlevel={png_zlevel})"),
+        TileFormat::Png => println!("Format: PNG (compression={png_compression:?})"),
     }
 
     let zoom_span = (max_zoom - min_zoom + 1) as usize;
@@ -474,7 +474,7 @@ pub fn convert(
     //
     //   Phase 1 (main thread, CPU): Compute which TIFF chunks each tile needs
     //   Phase 2 (main thread, sync I/O): Read + decompress + normalize all needed chunks
-    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + AVIF encode
+    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF or PNG)
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
     let avif_encoder = match tile_format {
@@ -528,7 +528,14 @@ pub fn convert(
                         }
                         let encoded = match &avif_encoder {
                             Some(enc) => crate::resample::encode_avif(enc, rgba_buf)?,
-                            None => crate::resample::encode_png(rgba_buf, png_zlevel)?,
+                            None => {
+                                let compression = match png_compression {
+                                    PngCompression::Fast => png::Compression::Fast,
+                                    PngCompression::Default => png::Compression::Default,
+                                    PngCompression::Best => png::Compression::Best,
+                                };
+                                crate::resample::encode_png(rgba_buf, compression)?
+                            }
                         };
                         Ok(Some(encoded))
                     })

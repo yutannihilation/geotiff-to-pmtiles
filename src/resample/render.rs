@@ -2,13 +2,11 @@ use ravif::{BitDepth, Encoder, Img, RGBA8};
 
 use super::{Pt, TILE_SIZE};
 
-pub(crate) fn encode_png(rgba: &[u8], zlevel: u8) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let compression = match zlevel {
-        0..=2 => png::Compression::Fast,
-        3..=6 => png::Compression::Default,
-        _ => png::Compression::Best,
-    };
-    let mut buf = Vec::new();
+pub(crate) fn encode_png(
+    rgba: &[u8],
+    compression: png::Compression,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut buf = Vec::with_capacity(TILE_SIZE * TILE_SIZE * 4);
     {
         let mut encoder = png::Encoder::new(&mut buf, TILE_SIZE as u32, TILE_SIZE as u32);
         encoder.set_color(png::ColorType::Rgba);

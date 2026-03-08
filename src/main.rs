@@ -22,7 +22,7 @@ fn main() -> ExitCode {
             tile_format: cli.tile_format,
             avif_quality: cli.avif_quality,
             avif_speed: cli.avif_speed,
-            png_zlevel: cli.png_zlevel,
+            png_compression: cli.png_compression,
         },
     );
 

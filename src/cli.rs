@@ -43,19 +43,22 @@ pub struct Cli {
         value_parser = value_parser!(u8).range(1..=10)
     )]
     pub avif_speed: u8,
-    /// PNG compression level 0-9 (higher is slower but smaller). Ignored for AVIF.
-    #[arg(
-        long = "zlevel",
-        default_value_t = crate::resample::DEFAULT_PNG_ZLEVEL,
-        value_parser = value_parser!(u8).range(0..=9)
-    )]
-    pub png_zlevel: u8,
+    /// PNG compression preset. Ignored for AVIF.
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompression::Default)]
+    pub png_compression: PngCompression,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum TileFormat {
     Avif,
     Png,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum PngCompression {
+    Fast,
+    Default,
+    Best,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
