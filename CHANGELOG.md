@@ -8,6 +8,7 @@
 
 ### New features
 
+- Add `--tile-format` option to choose between AVIF (default) and PNG tile encoding, with `--zlevel` for PNG compression control.
 - Handle GDAL-style nodata values, so pixels marked as nodata are treated as transparent (#13).
 
 ### Bug fixes

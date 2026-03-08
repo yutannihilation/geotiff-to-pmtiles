@@ -10,7 +10,7 @@ This document describes the current conversion/resampling strategy used by `geot
 4. Build tile coverage from union extent.
 5. For each tile, map tile corners back into each source raster.
 6. Render a `512x512` RGBA image.
-7. Encode to AVIF and (for `convert`) write into PMTiles.
+7. Encode to AVIF or PNG (selected via `--tile-format`) and write into PMTiles.
 
 ## Georeferencing Priority
 

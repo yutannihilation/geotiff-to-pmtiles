@@ -13,7 +13,7 @@ Compared to the existing solutions:
 
 - Single statically linked binary with no external runtime dependencies.
 - Supports multiple input arguments, so no pre-merge step with `gdal merge` is needed.
-- Outputs AVIF tiles.
+- Outputs AVIF (default) or PNG tiles.
 
 ## Installation
 
@@ -34,9 +34,11 @@ Options:
       --min-zoom <MIN_ZOOM>      Minimum zoom level. If omitted, it is auto-determined
       --max-zoom <MAX_ZOOM>      Maximum zoom level. If omitted, defaults to min_zoom + 3
       --resampling <RESAMPLING>  Resampling method [default: bilinear] [possible values: nearest, bilinear]
+      --tile-format <TILE_FORMAT>  Tile image format [default: avif] [possible values: avif, png]
       --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 128]
       --quality <AVIF_QUALITY>   AVIF quality in the range 1..=100 (higher is better quality, larger files) [default: 55]
       --speed <AVIF_SPEED>       AVIF speed in the range 1..=10 (lower is slower but better compression) [default: 4]
+      --zlevel <PNG_ZLEVEL>      PNG compression level 0-9 (higher is slower but smaller) [default: 6]
   -h, --help                     Print help
 ```
 
@@ -48,6 +50,9 @@ geotiff-to-pmtiles -o /path/to/out.pmtiles /path/to/*.tif
 
 # specify zoom levels (defaults: min zoom auto, max zoom = min + 3)
 geotiff-to-pmtiles --min-zoom 14 --max-zoom 18 /path/to/*.tif
+
+# use PNG tiles for faster encoding (larger output)
+geotiff-to-pmtiles --tile-format png /path/to/*.tif
 
 # if CRS is missing, use --src-crs option
 geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
