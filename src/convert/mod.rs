@@ -478,7 +478,7 @@ pub fn convert(
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
     let tile_encoder = match tile_format {
-        TileFormat::Avif => Some(crate::resample::make_tile_encoder(avif_speed, avif_quality)),
+        TileFormat::Avif => Some(crate::resample::make_avif_encoder(avif_speed, avif_quality)),
         TileFormat::Png => None,
     };
     let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
