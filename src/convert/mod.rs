@@ -477,8 +477,8 @@ pub fn convert(
     //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF or PNG)
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
-    let avif_encoder = match tile_format {
-        TileFormat::Avif => Some(crate::resample::make_avif_encoder(avif_speed, avif_quality)),
+    let tile_encoder = match tile_format {
+        TileFormat::Avif => Some(crate::resample::make_tile_encoder(avif_speed, avif_quality)),
         TileFormat::Png => None,
     };
     let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
@@ -526,7 +526,7 @@ pub fn convert(
                         if rgba_buf.chunks_exact(4).all(|px| px[3] == 0) {
                             return Ok(None);
                         }
-                        let encoded = match &avif_encoder {
+                        let encoded = match &tile_encoder {
                             Some(enc) => crate::resample::encode_avif(enc, rgba_buf)?,
                             None => {
                                 let compression = match png_compression {
