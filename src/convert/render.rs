@@ -22,13 +22,16 @@ pub(super) fn render_tile_chunked(
     resampling: Resampling,
     nodata: Option<NoDataSpec>,
     chunk_map: &HashMap<ChunkKey, ChunkData>,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    out: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Render one TILE_SIZE x TILE_SIZE output tile in scanline order.
-    let mut out = vec![0_u8; TILE_SIZE * TILE_SIZE * 4];
+    out.clear();
+    out.resize(TILE_SIZE * TILE_SIZE * 4, 0);
     let denom = (TILE_SIZE as f64 - 1.0).max(1.0);
+    let mut cursors = Vec::with_capacity(selected.len());
     for j in 0..TILE_SIZE {
         let v = if TILE_SIZE > 1 { j as f64 / denom } else { 0.0 };
-        let mut cursors = build_row_cursors(selected, v, denom);
+        refill_row_cursors(&mut cursors, selected, v, denom);
         match resampling {
             Resampling::Nearest => {
                 for i in 0..TILE_SIZE {
@@ -54,12 +57,17 @@ pub(super) fn render_tile_chunked(
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
-fn build_row_cursors(selected: &[(usize, [Pt; 4])], v: f64, denom: f64) -> Vec<RowSampleCursor> {
+fn refill_row_cursors(
+    cursors: &mut Vec<RowSampleCursor>,
+    selected: &[(usize, [Pt; 4])],
+    v: f64,
+    denom: f64,
+) {
     // Precompute per-row affine stepping so inner loops use only additions.
-    let mut cursors = Vec::with_capacity(selected.len());
+    cursors.clear();
     for (source_idx, corners) in selected {
         let left = lerp(corners[0], corners[3], v);
         let right = lerp(corners[1], corners[2], v);
@@ -73,7 +81,6 @@ fn build_row_cursors(selected: &[(usize, [Pt; 4])], v: f64, denom: f64) -> Vec<R
             dy,
         });
     }
-    cursors
 }
 
 fn advance_cursors(cursors: &mut [RowSampleCursor]) {

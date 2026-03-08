@@ -497,17 +497,23 @@ pub fn convert(
         batch_selections
             .par_iter()
             .map_init(
-                || make_samplers(&source_specs),
-                |sources, (job, selected)| {
-                    let result =
-                        render_tile_chunked(sources, selected, resampling, nodata, &chunk_map)
-                            .and_then(|rgba| {
-                                if rgba.chunks_exact(4).all(|px| px[3] == 0) {
-                                    return Ok(None);
-                                }
-                                Ok(Some(crate::resample::encode_avif(&avif_encoder, &rgba)?))
-                            })
-                            .map_err(|e| e.to_string());
+                || {
+                    (
+                        make_samplers(&source_specs),
+                        Vec::with_capacity(TILE_SIZE * TILE_SIZE * 4),
+                    )
+                },
+                |(sources, rgba_buf), (job, selected)| {
+                    let result = render_tile_chunked(
+                        sources, selected, resampling, nodata, &chunk_map, rgba_buf,
+                    )
+                    .and_then(|()| {
+                        if rgba_buf.chunks_exact(4).all(|px| px[3] == 0) {
+                            return Ok(None);
+                        }
+                        Ok(Some(crate::resample::encode_avif(&avif_encoder, rgba_buf)?))
+                    })
+                    .map_err(|e| e.to_string());
 
                     let _ = tx.send((job.write_idx, result));
                 },
