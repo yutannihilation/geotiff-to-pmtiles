@@ -19,8 +19,10 @@ fn main() -> ExitCode {
             min_zoom: cli.min_zoom,
             max_zoom: cli.max_zoom,
             resampling: cli.resampling,
+            tile_format: cli.tile_format,
             avif_quality: cli.avif_quality,
             avif_speed: cli.avif_speed,
+            png_compression: cli.png_compression,
         },
     );
 

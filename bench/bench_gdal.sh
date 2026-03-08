@@ -66,9 +66,9 @@ chmod +x "$RIO_SCRIPT"
 trap 'rm -f "$GDAL_SCRIPT" "$RIO_SCRIPT"' EXIT
 
 scenarios=(
-  # "small:bench-data/small/*.tif:12:16"
+  "small:bench-data/small/*.tif:12:16"
   "large:bench-data/large/*.tif:12:16"
-  # "many:bench-data/many/*.tif:12:16"
+  "many:bench-data/many/*.tif:12:16"
 )
 
 for scenario in "${scenarios[@]}"; do
@@ -82,7 +82,7 @@ for scenario in "${scenarios[@]}"; do
     --runs 1 \
     --cleanup "rm -f out.pmtiles" \
     --export-markdown "bench-${name}.md" \
-    -n "geotiff-to-pmtiles" "$GEOTIFF_BIN $input --src-crs EPSG:4326 --min-zoom $min_zoom --max-zoom $max_zoom" \
+    -n "geotiff-to-pmtiles" "$GEOTIFF_BIN $input --tile-format png --src-crs EPSG:4326 --min-zoom $min_zoom --max-zoom $max_zoom" \
     -n "gdal" "bash $GDAL_SCRIPT '$input' $min_zoom $max_zoom $PMTILES_BIN" \
     -n "rio-pmtiles" "bash $RIO_SCRIPT '$input' $min_zoom $max_zoom"
 done

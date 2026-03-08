@@ -13,7 +13,7 @@ use proj_lite::Proj;
 use rayon::prelude::*;
 use tiff::decoder::Decoder;
 
-use crate::cli::Resampling;
+use crate::cli::{PngCompression, Resampling, TileFormat};
 use crate::resample::{
     Georef, NoDataSpec, Pt, SourceMetadata, TAG_PLANAR_CONFIGURATION, TILE_SIZE, parse_nodata,
     source_corners_merc_georef, tile_bounds_webmerc, tile_corners_in_georef_raster,
@@ -35,8 +35,10 @@ pub struct ConvertOptions<'a> {
     pub min_zoom: Option<u8>,
     pub max_zoom: Option<u8>,
     pub resampling: Resampling,
+    pub tile_format: TileFormat,
     pub avif_quality: u8,
     pub avif_speed: u8,
+    pub png_compression: PngCompression,
 }
 
 struct SourceSpec {
@@ -245,8 +247,10 @@ pub fn convert(
         min_zoom: min_zoom_opt,
         max_zoom: max_zoom_opt,
         resampling,
+        tile_format,
         avif_quality,
         avif_speed,
+        png_compression,
     } = options;
     let cli_nodata = parse_nodata(nodata)?;
 
@@ -370,8 +374,13 @@ pub fn convert(
     let center_lon = (min_lon + max_lon) / 2.0;
     let center_lat = (min_lat + max_lat) / 2.0;
 
+    let pmtiles_tile_type = match tile_format {
+        TileFormat::Avif => TileType::Avif,
+        TileFormat::Png => TileType::Png,
+    };
+
     let file = File::create(output)?;
-    let mut writer = PmTilesWriter::new(TileType::Avif)
+    let mut writer = PmTilesWriter::new(pmtiles_tile_type)
         .tile_compression(Compression::None)
         .min_zoom(min_zoom)
         .max_zoom(max_zoom)
@@ -384,7 +393,10 @@ pub fn convert(
     println!("Input files: {}", source_specs.len());
     println!("Output: {}", output.display());
     println!("Zoom range: {min_zoom}..{max_zoom}");
-    println!("AVIF: quality={avif_quality}, speed={avif_speed}");
+    match tile_format {
+        TileFormat::Avif => println!("Format: AVIF (quality={avif_quality}, speed={avif_speed})"),
+        TileFormat::Png => println!("Format: PNG (compression={png_compression:?})"),
+    }
 
     let zoom_span = (max_zoom - min_zoom + 1) as usize;
     let mut skipped_empty_by_zoom = vec![0usize; zoom_span];
@@ -462,10 +474,13 @@ pub fn convert(
     //
     //   Phase 1 (main thread, CPU): Compute which TIFF chunks each tile needs
     //   Phase 2 (main thread, sync I/O): Read + decompress + normalize all needed chunks
-    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + AVIF encode
+    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF or PNG)
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
-    let avif_encoder = crate::resample::make_avif_encoder(avif_speed, avif_quality);
+    let tile_encoder = match tile_format {
+        TileFormat::Avif => Some(crate::resample::make_avif_encoder(avif_speed, avif_quality)),
+        TileFormat::Png => None,
+    };
     let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
     let mut next_to_write = 0usize;
     let mut ready_by_write_idx = vec![None::<Option<Vec<u8>>>; total_tiles];
@@ -511,7 +526,18 @@ pub fn convert(
                         if rgba_buf.chunks_exact(4).all(|px| px[3] == 0) {
                             return Ok(None);
                         }
-                        Ok(Some(crate::resample::encode_avif(&avif_encoder, rgba_buf)?))
+                        let encoded = match &tile_encoder {
+                            Some(enc) => crate::resample::encode_avif(enc, rgba_buf)?,
+                            None => {
+                                let compression = match png_compression {
+                                    PngCompression::Fast => png::Compression::Fast,
+                                    PngCompression::Default => png::Compression::Default,
+                                    PngCompression::Best => png::Compression::Best,
+                                };
+                                crate::resample::encode_png(rgba_buf, compression)?
+                            }
+                        };
+                        Ok(Some(encoded))
                     })
                     .map_err(|e| e.to_string());
 

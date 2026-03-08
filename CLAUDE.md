@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rust CLI tool that converts GeoTIFF files to PMTiles with AVIF image tiles. Single statically linked binary, supports multiple inputs without pre-merge, outputs 256×256 AVIF tiles.
+Rust CLI tool that converts GeoTIFF files to PMTiles with AVIF or PNG image tiles. Single statically linked binary, supports multiple inputs without pre-merge, outputs 256×256 tiles.
 
 ## Build & Development Commands
 
@@ -32,7 +32,7 @@ Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before opening 
 3. Reproject source corners to Web Mercator (EPSG:3857) via `proj-lite`
 4. Compute tile coverage and zoom levels (`src/resample/types.rs`)
 5. Parallel tile rendering with rayon (`src/convert/mod.rs`)
-6. Encode tiles to AVIF (`src/resample/render.rs`) → write PMTiles
+6. Encode tiles to AVIF or PNG (`src/resample/render.rs`) → write PMTiles
 
 **Key modules:**
 

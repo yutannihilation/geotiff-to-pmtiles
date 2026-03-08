@@ -2,6 +2,22 @@ use ravif::{BitDepth, Encoder, Img, RGBA8};
 
 use super::{Pt, TILE_SIZE};
 
+pub(crate) fn encode_png(
+    rgba: &[u8],
+    compression: png::Compression,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut buf = Vec::with_capacity(TILE_SIZE * TILE_SIZE * 4);
+    {
+        let mut encoder = png::Encoder::new(&mut buf, TILE_SIZE as u32, TILE_SIZE as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(compression);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(rgba)?;
+    }
+    Ok(buf)
+}
+
 pub(crate) fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
     Pt {
         x: a.x + (b.x - a.x) * t,
