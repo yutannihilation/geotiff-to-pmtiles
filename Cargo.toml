@@ -22,6 +22,7 @@ ravif = "0.13.0"
 rgb = { version = "0.8.52", features = ["bytemuck"] }
 rayon = "1.11.0"
 glob = "0.3.2"
+png = "0.17"
 
 # The profile that 'dist' will build with
 [profile.dist]

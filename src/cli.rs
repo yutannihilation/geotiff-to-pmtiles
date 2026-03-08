@@ -3,7 +3,7 @@ use clap::value_parser;
 
 #[derive(Debug, Parser)]
 #[command(name = "geotiff-to-pmtiles")]
-#[command(about = "Convert GeoTIFF to PMTiles with AVIF image tiles")]
+#[command(about = "Convert GeoTIFF to PMTiles with AVIF/PNG image tiles")]
 pub struct Cli {
     /// Input GeoTIFF path(s) and/or glob pattern(s) (e.g. data/*.tif data/a.tif).
     #[arg(required = true, num_args = 1..)]
@@ -26,20 +26,36 @@ pub struct Cli {
     /// Resampling method.
     #[arg(long, value_enum, default_value_t = Resampling::Bilinear)]
     pub resampling: Resampling,
-    /// AVIF quality in the range 1..=100 (higher is better quality, larger files).
+    /// Tile image format.
+    #[arg(long = "tile-format", value_enum, default_value_t = TileFormat::Avif)]
+    pub tile_format: TileFormat,
+    /// AVIF quality in the range 1..=100 (higher is better quality, larger files). Ignored for PNG.
     #[arg(
         long = "quality",
         default_value_t = crate::resample::DEFAULT_AVIF_QUALITY,
         value_parser = value_parser!(u8).range(1..=100)
     )]
     pub avif_quality: u8,
-    /// AVIF speed in the range 1..=10 (lower is slower but better compression).
+    /// AVIF speed in the range 1..=10 (lower is slower but better compression). Ignored for PNG.
     #[arg(
         long = "speed",
         default_value_t = crate::resample::DEFAULT_AVIF_SPEED,
         value_parser = value_parser!(u8).range(1..=10)
     )]
     pub avif_speed: u8,
+    /// PNG compression level 0-9 (higher is slower but smaller). Ignored for AVIF.
+    #[arg(
+        long = "zlevel",
+        default_value_t = crate::resample::DEFAULT_PNG_ZLEVEL,
+        value_parser = value_parser!(u8).range(0..=9)
+    )]
+    pub png_zlevel: u8,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum TileFormat {
+    Avif,
+    Png,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
