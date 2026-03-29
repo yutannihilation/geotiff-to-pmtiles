@@ -531,8 +531,8 @@ pub fn convert(
                             None => {
                                 let compression = match png_compression {
                                     PngCompression::Fast => png::Compression::Fast,
-                                    PngCompression::Default => png::Compression::Default,
-                                    PngCompression::Best => png::Compression::Best,
+                                    PngCompression::Balanced => png::Compression::Balanced,
+                                    PngCompression::High => png::Compression::High,
                                 };
                                 crate::resample::encode_png(rgba_buf, compression)?
                             }
