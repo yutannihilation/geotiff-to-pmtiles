@@ -44,7 +44,7 @@ pub struct Cli {
     )]
     pub avif_speed: u8,
     /// PNG compression preset. Ignored for AVIF.
-    #[arg(long = "png-compression", value_enum, default_value_t = PngCompression::Default)]
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompression::Balanced)]
     pub png_compression: PngCompression,
 }
 
@@ -57,8 +57,8 @@ pub enum TileFormat {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum PngCompression {
     Fast,
-    Default,
-    Best,
+    Balanced,
+    High,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
