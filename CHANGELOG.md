@@ -3,6 +3,8 @@
 <!-- next-header -->
 ## [Unreleased] (ReleaseDate)
 
+## [v0.0.13] (2026-03-30)
+
 ### Breaking changes
 
 - Increased tile size from 256×256 to 512×512 pixels. Map viewers consuming the output must be configured with `tileSize: 512`.
@@ -28,6 +30,7 @@
 - Fixed LZW decompression for files using LSB bit order by trying multiple decoder configurations (#14).
 
 <!-- next-url -->
-[Unreleased]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.12...HEAD
+[Unreleased]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.13...HEAD
+[v0.0.13]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.12...v0.0.13
 [v0.0.12]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.11...v0.0.12
 [v0.0.11]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.10...v0.0.11
