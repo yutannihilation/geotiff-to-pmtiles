@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rust CLI tool that converts GeoTIFF files to PMTiles with AVIF or PNG image tiles. Single statically linked binary, supports multiple inputs without pre-merge, outputs 256×256 tiles.
+Rust CLI tool that converts GeoTIFF files to PMTiles with AVIF or PNG image tiles. Single statically linked binary, supports multiple inputs without pre-merge, outputs 512×512 tiles.
 
 ## Build & Development Commands
 
@@ -52,4 +52,4 @@ Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before opening 
 - Commit format: `type(scope): summary` (e.g. `feat(conversion): add tile pyramid builder`)
 - Unit tests live in `#[cfg(test)] mod tests` next to the implementation
 - Error handling: `Result<T, Box<dyn std::error::Error>>`
-- Constants in `src/resample/mod.rs`: `TILE_SIZE=256`, `DEFAULT_AVIF_QUALITY=55`, `DEFAULT_AVIF_SPEED=4`
+- Constants in `src/resample/mod.rs`: `TILE_SIZE=512`, `DEFAULT_AVIF_QUALITY=55`, `DEFAULT_AVIF_SPEED=4`

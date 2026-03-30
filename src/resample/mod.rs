@@ -4,7 +4,7 @@ mod nodata;
 mod render;
 mod types;
 
-pub(crate) const TILE_SIZE: usize = 256;
+pub(crate) const TILE_SIZE: usize = 512;
 pub(crate) const DEFAULT_AVIF_QUALITY: u8 = 55;
 pub(crate) const DEFAULT_AVIF_SPEED: u8 = 4;
 

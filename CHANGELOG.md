@@ -3,6 +3,10 @@
 <!-- next-header -->
 ## [Unreleased] (ReleaseDate)
 
+### Breaking changes
+
+- Increased tile size from 256×256 to 512×512 pixels. Map viewers consuming the output must be configured with `tileSize: 512`.
+
 ## [v0.0.12] (2026-03-08)
 
 ### New features
