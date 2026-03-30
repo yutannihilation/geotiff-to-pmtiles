@@ -57,6 +57,7 @@ geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
 
 ## Notes
 
+- Output tiles are 512×512 pixels. When using the tiles in a map viewer, set `tileSize: 512` (e.g. in MapLibre GL JS or Leaflet).
 - The output tile format is AVIF by default for significantly smaller file sizes than PNG/JPEG, at the cost of slower encoding than GDAL. Use `--tile-format png` when speed matters or when running on a less powerful machine.
 - If GeoTIFF georeferencing tags are missing, the tool falls back to adjacent world files (`.tfw`, `.TFW`, `.tifw`, `.TIFW`) when available.
 - `--src-crs` is required when CRS metadata is missing.
