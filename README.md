@@ -48,8 +48,11 @@ geotiff-to-pmtiles -o /path/to/out.pmtiles /path/to/*.tif
 # specify zoom levels (defaults: min zoom auto, max zoom = min + 3)
 geotiff-to-pmtiles --min-zoom 14 --max-zoom 18 /path/to/*.tif
 
-# use PNG tiles for faster encoding (larger output)
-geotiff-to-pmtiles --tile-format png /path/to/*.tif
+# photo tiles (e.g. ortho): lossy AVIF + bilinear (default)
+geotiff-to-pmtiles /path/to/*.tif
+
+# data tiles (e.g. DEM, land cover): lossless PNG + nearest
+geotiff-to-pmtiles --tile-format png --resampling nearest /path/to/*.tif
 
 # if CRS is missing, use --src-crs option
 geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
