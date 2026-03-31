@@ -48,7 +48,7 @@ pub(crate) fn encode_webp(
     rgba: &[u8],
     lossy_quality: Option<u8>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut buf = Vec::with_capacity(TILE_SIZE * TILE_SIZE);
+    let mut buf = Vec::with_capacity(TILE_SIZE * TILE_SIZE * 4);
     let mut encoder = WebPEncoder::new(&mut buf);
     if let Some(quality) = lossy_quality {
         let mut params = EncoderParams::default();

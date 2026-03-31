@@ -479,7 +479,7 @@ pub fn convert(
     //
     //   Phase 1 (main thread, CPU): Compute which TIFF chunks each tile needs
     //   Phase 2 (main thread, sync I/O): Read + decompress + normalize all needed chunks
-    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF or PNG)
+    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF, WebP, or PNG)
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
     let avif_encoder = match tile_format {

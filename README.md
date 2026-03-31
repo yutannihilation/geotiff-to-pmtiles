@@ -10,7 +10,7 @@ Compared to the existing solutions:
 
 - Single statically linked binary with no external runtime dependencies.
 - Supports multiple input TIFF files directly (i.e. so no pre-merge step with `gdal merge` or `gdalbuildvrt`).
-- Supports AVIF and WebP tiles.
+- Supports AVIF, PNG, and WebP tiles.
 
 ## Installation
 
