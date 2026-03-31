@@ -10,7 +10,7 @@ Compared to the existing solutions:
 
 - Single statically linked binary with no external runtime dependencies.
 - Supports multiple input TIFF files directly (i.e. so no pre-merge step with `gdal merge` or `gdalbuildvrt`).
-- Supports AVIF tiles.
+- Supports AVIF and WebP tiles.
 
 ## Installation
 
@@ -31,11 +31,12 @@ Options:
       --min-zoom <MIN_ZOOM>      Minimum zoom level. If omitted, it is auto-determined
       --max-zoom <MAX_ZOOM>      Maximum zoom level. If omitted, defaults to min_zoom + 3
       --resampling <RESAMPLING>  Resampling method [default: bilinear] [possible values: nearest, bilinear]
-      --tile-format <TILE_FORMAT>  Tile image format [default: avif] [possible values: avif, png]
+      --tile-format <TILE_FORMAT>  Tile image format [default: avif] [possible values: avif, png, webp-lossless, webp-lossy]
       --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 128]
       --quality <AVIF_QUALITY>   AVIF quality in the range 1..=100 (higher is better quality, larger files) [default: 55]
       --speed <AVIF_SPEED>       AVIF speed in the range 1..=10 (lower is slower but better compression) [default: 4]
       --png-compression <PNG_COMPRESSION>  PNG compression preset [default: default] [possible values: fast, default, best]
+      --webp-quality <WEBP_QUALITY>  WebP quality for lossy mode (1..=100) [default: 75]
   -h, --help                     Print help
 ```
 
@@ -64,10 +65,12 @@ All tiles are 512×512 pixels. When using the tiles in a map viewer, set `tileSi
 
 | Format | Encoding | File size | Speed | Best for |
 |--------|----------|-----------|-------|----------|
-| AVIF (default) | Lossy | Small | Slow | Photo imagery (ortho, satellite) |
-| PNG | Lossless | Large | Fast | Data rasters (DEM, land cover) |
+| AVIF (default) | Lossy | Smallest | Slow | Photo imagery (ortho, satellite) |
+| WebP lossy | Lossy | Small | Medium | Photo imagery, wider viewer support |
+| WebP lossless | Lossless | Medium | Medium | Data rasters with good compression |
+| PNG | Lossless | Largest | Fast | Data rasters (DEM, land cover) |
 
-**Important:** Lossy encoding (AVIF) alters pixel values, which corrupts data tiles like DEM where exact values matter. For data rasters, use `--tile-format png --resampling nearest` to preserve original values.
+**Important:** Lossy encoding (AVIF, WebP lossy) alters pixel values, which corrupts data tiles like DEM where exact values matter. For data rasters, use a lossless format (`png` or `webp-lossless`) with `--resampling nearest` to preserve original values.
 
 ## Notes
 - If GeoTIFF georeferencing tags are missing, the tool falls back to adjacent world files (`.tfw`, `.TFW`, `.tifw`, `.TIFW`) when available.

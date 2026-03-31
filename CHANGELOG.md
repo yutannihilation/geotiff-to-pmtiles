@@ -3,6 +3,10 @@
 <!-- next-header -->
 ## [Unreleased] (ReleaseDate)
 
+### New features
+
+- Add WebP tile format support with `--tile-format webp-lossless` and `--tile-format webp-lossy` options. Use `--webp-quality` to control lossy quality (default: 75).
+
 ## [v0.0.13] (2026-03-30)
 
 ### Breaking changes

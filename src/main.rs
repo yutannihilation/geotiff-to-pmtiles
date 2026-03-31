@@ -23,6 +23,7 @@ fn main() -> ExitCode {
             avif_quality: cli.avif_quality,
             avif_speed: cli.avif_speed,
             png_compression: cli.png_compression,
+            webp_quality: cli.webp_quality,
         },
     );
 
