@@ -43,15 +43,24 @@ pub struct Cli {
         value_parser = value_parser!(u8).range(1..=10)
     )]
     pub avif_speed: u8,
-    /// PNG compression preset. Ignored for AVIF.
+    /// PNG compression preset. Ignored for other formats.
     #[arg(long = "png-compression", value_enum, default_value_t = PngCompression::Balanced)]
     pub png_compression: PngCompression,
+    /// WebP quality for lossy mode in the range 1..=100 (higher is better quality, larger files). Ignored for other formats.
+    #[arg(
+        long = "webp-quality",
+        default_value_t = crate::resample::DEFAULT_WEBP_QUALITY,
+        value_parser = value_parser!(u8).range(1..=100)
+    )]
+    pub webp_quality: u8,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum TileFormat {
     Avif,
     Png,
+    WebpLossless,
+    WebpLossy,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

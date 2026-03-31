@@ -208,6 +208,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
 
 [[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
+
+[[package]]
 name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -468,6 +474,7 @@ version = "0.0.13"
 dependencies = [
  "clap",
  "glob",
+ "image-webp",
  "pmtiles",
  "png",
  "proj-lite",
@@ -511,6 +518,15 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "git+https://github.com/image-rs/image-webp#28bed2274df92d600a823004e2fedd498ead4619"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
+]
 
 [[package]]
 name = "imgref"

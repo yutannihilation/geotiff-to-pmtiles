@@ -39,6 +39,7 @@ pub struct ConvertOptions<'a> {
     pub avif_quality: u8,
     pub avif_speed: u8,
     pub png_compression: PngCompression,
+    pub webp_quality: u8,
 }
 
 struct SourceSpec {
@@ -251,6 +252,7 @@ pub fn convert(
         avif_quality,
         avif_speed,
         png_compression,
+        webp_quality,
     } = options;
     let cli_nodata = parse_nodata(nodata)?;
 
@@ -377,6 +379,7 @@ pub fn convert(
     let pmtiles_tile_type = match tile_format {
         TileFormat::Avif => TileType::Avif,
         TileFormat::Png => TileType::Png,
+        TileFormat::WebpLossless | TileFormat::WebpLossy => TileType::Webp,
     };
 
     let file = File::create(output)?;
@@ -396,6 +399,8 @@ pub fn convert(
     match tile_format {
         TileFormat::Avif => println!("Format: AVIF (quality={avif_quality}, speed={avif_speed})"),
         TileFormat::Png => println!("Format: PNG (compression={png_compression:?})"),
+        TileFormat::WebpLossless => println!("Format: WebP lossless"),
+        TileFormat::WebpLossy => println!("Format: WebP lossy (quality={webp_quality})"),
     }
 
     let zoom_span = (max_zoom - min_zoom + 1) as usize;
@@ -474,12 +479,12 @@ pub fn convert(
     //
     //   Phase 1 (main thread, CPU): Compute which TIFF chunks each tile needs
     //   Phase 2 (main thread, sync I/O): Read + decompress + normalize all needed chunks
-    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF or PNG)
+    //   Phase 3 (rayon thread pool): Render tiles from pre-loaded chunks + encode (AVIF, WebP, or PNG)
     //   Phase 4 (main thread): Write encoded tiles to PMTiles
 
-    let tile_encoder = match tile_format {
+    let avif_encoder = match tile_format {
         TileFormat::Avif => Some(crate::resample::make_avif_encoder(avif_speed, avif_quality)),
-        TileFormat::Png => None,
+        _ => None,
     };
     let (encoded_tx, encoded_rx) = mpsc::channel::<(usize, Result<Option<Vec<u8>>, String>)>();
     let mut next_to_write = 0usize;
@@ -526,15 +531,24 @@ pub fn convert(
                         if rgba_buf.chunks_exact(4).all(|px| px[3] == 0) {
                             return Ok(None);
                         }
-                        let encoded = match &tile_encoder {
-                            Some(enc) => crate::resample::encode_avif(enc, rgba_buf)?,
-                            None => {
+                        let encoded = match tile_format {
+                            TileFormat::Avif => crate::resample::encode_avif(
+                                avif_encoder.as_ref().expect("avif_encoder must be set"),
+                                rgba_buf,
+                            )?,
+                            TileFormat::Png => {
                                 let compression = match png_compression {
                                     PngCompression::Fast => png::Compression::Fast,
                                     PngCompression::Balanced => png::Compression::Balanced,
                                     PngCompression::High => png::Compression::High,
                                 };
                                 crate::resample::encode_png(rgba_buf, compression)?
+                            }
+                            TileFormat::WebpLossless => {
+                                crate::resample::encode_webp(rgba_buf, None)?
+                            }
+                            TileFormat::WebpLossy => {
+                                crate::resample::encode_webp(rgba_buf, Some(webp_quality))?
                             }
                         };
                         Ok(Some(encoded))
