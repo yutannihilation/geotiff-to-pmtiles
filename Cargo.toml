@@ -4,7 +4,7 @@ exclude = ["tools/generate-bench-data"]
 
 [package]
 name = "geotiff-to-pmtiles"
-version = "0.0.13"
+version = "0.0.14"
 edition = "2024"
 repository = "https://github.com/yutannihilation/geotiff-to-pmtiles"
 autobins = false

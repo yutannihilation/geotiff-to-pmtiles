@@ -3,6 +3,8 @@
 <!-- next-header -->
 ## [Unreleased] (ReleaseDate)
 
+## [v0.0.14] (2026-03-31)
+
 ### New features
 
 - Add WebP tile format support with `--tile-format webp-lossless` and `--tile-format webp-lossy` options. Use `--webp-quality` to control lossy quality (default: 75).
@@ -34,7 +36,8 @@
 - Fixed LZW decompression for files using LSB bit order by trying multiple decoder configurations (#14).
 
 <!-- next-url -->
-[Unreleased]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.14...HEAD
+[v0.0.14]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.13...v0.0.14
 [v0.0.13]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.12...v0.0.13
 [v0.0.12]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.11...v0.0.12
 [v0.0.11]: https://github.com/yutannihilation/geotiff-to-pmtiles/compare/v0.0.10...v0.0.11
