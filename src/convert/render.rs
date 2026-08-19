@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::cli::Resampling;
 use crate::resample::{NoDataSpec, Pt, lerp};
@@ -21,7 +22,7 @@ pub(super) fn render_tile_chunked(
     selected: &[(usize, [Pt; 4])],
     resampling: Resampling,
     nodata: Option<NoDataSpec>,
-    chunk_map: &HashMap<ChunkKey, ChunkData>,
+    chunk_map: &HashMap<ChunkKey, Arc<ChunkData>>,
     out: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Render one TILE_SIZE x TILE_SIZE output tile in scanline order.
@@ -95,7 +96,7 @@ fn sample_nearest_multi(
     samplers: &mut [SourceSampler],
     cursors: &[RowSampleCursor],
     nodata: Option<NoDataSpec>,
-    chunk_map: &HashMap<ChunkKey, ChunkData>,
+    chunk_map: &HashMap<ChunkKey, Arc<ChunkData>>,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // First source in input order that yields a valid (non-nodata) sample wins.
     for c in cursors {
@@ -110,7 +111,7 @@ fn sample_bilinear_multi(
     samplers: &mut [SourceSampler],
     cursors: &[RowSampleCursor],
     nodata: Option<NoDataSpec>,
-    chunk_map: &HashMap<ChunkKey, ChunkData>,
+    chunk_map: &HashMap<ChunkKey, Arc<ChunkData>>,
 ) -> Result<[u8; 4], Box<dyn std::error::Error>> {
     // Bilinear policy across sources: first source in input order that yields a valid sample wins.
     for c in cursors {
@@ -128,7 +129,7 @@ fn sample_nearest_opt(
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
-    chunk_map: &HashMap<ChunkKey, ChunkData>,
+    chunk_map: &HashMap<ChunkKey, Arc<ChunkData>>,
 ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
     let xi = x.round() as isize;
     let yi = y.round() as isize;
@@ -149,7 +150,7 @@ fn sample_bilinear_opt(
     x: f64,
     y: f64,
     nodata: Option<NoDataSpec>,
-    chunk_map: &HashMap<ChunkKey, ChunkData>,
+    chunk_map: &HashMap<ChunkKey, Arc<ChunkData>>,
 ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
     let x0 = x.floor();
     let y0 = y.floor();

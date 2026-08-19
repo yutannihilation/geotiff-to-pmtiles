@@ -26,13 +26,15 @@ Arguments:
 
 Options:
   -o, --output <OUTPUT>          Output PMTiles path [default: out.pmtiles]
+      --serve                    Serve requested tiles dynamically instead of creating a PMTiles file
+      --bind <BIND>              Address used by preview server mode [default: 127.0.0.1:3000]
+      --cache-mb <CACHE_MB>      Decoded TIFF chunk cache size in MiB for preview server mode [default: 128]
       --src-crs <SRC_CRS>        Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326")
       --nodata <NODATA>          NoData value, e.g. "0" or "255,255,255"
       --min-zoom <MIN_ZOOM>      Minimum zoom level. If omitted, it is auto-determined
       --max-zoom <MAX_ZOOM>      Maximum zoom level. If omitted, defaults to min_zoom + 3
       --resampling <RESAMPLING>  Resampling method [default: bilinear] [possible values: nearest, bilinear]
       --tile-format <TILE_FORMAT>  Tile image format [default: avif] [possible values: avif, png, webp-lossless, webp-lossy]
-      --cache-mb <CACHE_MB>      Global chunk cache size in MiB for TIFF partial reads [default: 128]
       --quality <AVIF_QUALITY>   AVIF quality in the range 1..=100 (higher is better quality, larger files) [default: 55]
       --speed <AVIF_SPEED>       AVIF speed in the range 1..=10 (lower is slower but better compression) [default: 4]
       --png-compression <PNG_COMPRESSION>  PNG compression preset [default: default] [possible values: fast, default, best]
@@ -57,7 +59,18 @@ geotiff-to-pmtiles --tile-format png --resampling nearest /path/to/*.tif
 
 # if CRS is missing, use --src-crs option
 geotiff-to-pmtiles --src-crs EPSG:6677 /path/to/*.tif
+
+# preview tiles without creating a PMTiles file
+geotiff-to-pmtiles --serve --tile-format png /path/to/*.tif
+# then use http://127.0.0.1:3000/tiles/{z}/{x}/{y}.png as an XYZ source
 ```
+
+## Preview server
+
+`--serve` loads the fixed input GeoTIFF metadata once and renders only requested
+XYZ tiles. Decoded TIFF chunks are retained in a byte-bounded LRU cache controlled
+by `--cache-mb`. The server returns `204 No Content` for tiles outside the source
+coverage or tiles that render fully transparent. Press Ctrl+C to stop it.
 
 ## Output tile format
 
