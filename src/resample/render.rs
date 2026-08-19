@@ -1,3 +1,4 @@
+use image_webp::{EncoderParams, WebPEncoder};
 use ravif::{BitDepth, Encoder, Img, RGBA8};
 
 use super::{Pt, TILE_SIZE};
@@ -41,4 +42,25 @@ pub(crate) fn encode_avif(
     let img = Img::new(pixels, TILE_SIZE, TILE_SIZE);
     let encoded = encoder.encode_rgba(img)?;
     Ok(encoded.avif_file)
+}
+
+pub(crate) fn encode_webp(
+    rgba: &[u8],
+    lossy_quality: Option<u8>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut buf = Vec::with_capacity(TILE_SIZE * TILE_SIZE * 4);
+    let mut encoder = WebPEncoder::new(&mut buf);
+    if let Some(quality) = lossy_quality {
+        let mut params = EncoderParams::default();
+        params.use_lossy = true;
+        params.lossy_quality = quality;
+        encoder.set_params(params);
+    }
+    encoder.encode(
+        rgba,
+        TILE_SIZE as u32,
+        TILE_SIZE as u32,
+        image_webp::ColorType::Rgba8,
+    )?;
+    Ok(buf)
 }

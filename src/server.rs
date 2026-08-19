@@ -35,6 +35,7 @@ pub(crate) fn serve(
     let (extension, content_type) = match renderer.tile_format() {
         TileFormat::Avif => ("avif", "image/avif"),
         TileFormat::Png => ("png", "image/png"),
+        TileFormat::WebpLossless | TileFormat::WebpLossy => ("webp", "image/webp"),
     };
     let state = AppState {
         renderer,

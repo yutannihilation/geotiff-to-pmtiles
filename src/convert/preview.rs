@@ -28,6 +28,7 @@ pub(crate) struct PreviewRenderer {
     tile_format: TileFormat,
     avif_encoder: Option<ravif::Encoder<'static>>,
     png_compression: PngCompression,
+    webp_quality: u8,
 }
 
 impl PreviewRenderer {
@@ -44,6 +45,7 @@ impl PreviewRenderer {
             avif_quality,
             avif_speed,
             png_compression,
+            webp_quality,
             ..
         } = options;
 
@@ -79,9 +81,10 @@ impl PreviewRenderer {
                 TileFormat::Avif => {
                     Some(crate::resample::make_avif_encoder(avif_speed, avif_quality))
                 }
-                TileFormat::Png => None,
+                _ => None,
             },
             png_compression,
+            webp_quality,
         })
     }
 
@@ -141,6 +144,8 @@ impl PreviewRenderer {
                 };
                 crate::resample::encode_png(&rgba, compression)?
             }
+            TileFormat::WebpLossless => crate::resample::encode_webp(&rgba, None)?,
+            TileFormat::WebpLossy => crate::resample::encode_webp(&rgba, Some(self.webp_quality))?,
         };
         Ok(Some(encoded))
     }
