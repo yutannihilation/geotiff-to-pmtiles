@@ -1,4 +1,5 @@
 pub(crate) mod cache;
+pub(crate) mod preview;
 mod render;
 mod source;
 
@@ -6,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileId, TileType};
 use proj_lite::Proj;
@@ -174,7 +175,7 @@ fn read_chunks(
     needed_chunks: &HashSet<ChunkKey>,
     decoders: &mut [Decoder<BufReader<File>>],
     layouts: &[ChunkLayout],
-) -> Result<HashMap<ChunkKey, ChunkData>, Box<dyn std::error::Error>> {
+) -> Result<HashMap<ChunkKey, Arc<ChunkData>>, Box<dyn std::error::Error>> {
     if needed_chunks.is_empty() {
         return Ok(HashMap::new());
     }
@@ -212,12 +213,12 @@ fn read_chunks(
                     source_idx: *source_idx,
                     chunk_idx,
                 },
-                ChunkData {
+                Arc::new(ChunkData {
                     width: cw,
                     height: ch,
                     stride,
                     data,
-                },
+                }),
             );
         }
     }
@@ -234,6 +235,43 @@ fn make_samplers(source_specs: &[SourceSpec]) -> Vec<SourceSampler> {
         sources.push(SourceSampler { reader: sampler });
     }
     sources
+}
+
+fn resolve_nodata(
+    sources: &[SourceMetadata],
+    cli_nodata: Option<NoDataSpec>,
+) -> Result<Option<NoDataSpec>, Box<dyn std::error::Error>> {
+    if cli_nodata.is_some() {
+        return Ok(cli_nodata);
+    }
+
+    let mut gdal_specs = HashSet::new();
+    for source in sources {
+        let Some(value) = source.gdal_nodata.as_deref() else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match parse_nodata(Some(value)) {
+            Ok(Some(spec)) => {
+                gdal_specs.insert(spec);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("Warning: ignoring unsupported GDAL_NODATA value `{value}`: {error}")
+            }
+        }
+    }
+
+    match gdal_specs.len() {
+        0 => Ok(None),
+        1 => Ok(gdal_specs.into_iter().next()),
+        _ => Err(
+            "conflicting GDAL_NODATA values across input sources; please specify --nodata".into(),
+        ),
+    }
 }
 
 pub fn convert(
@@ -260,45 +298,7 @@ pub fn convert(
 
     // Use CLI --nodata if provided, otherwise fall back to GDAL_NODATA tags
     // (only when all sources agree on a single value).
-    let nodata = if cli_nodata.is_some() {
-        cli_nodata
-    } else {
-        let mut gdal_specs: HashSet<NoDataSpec> = HashSet::new();
-        for meta in &sources_meta {
-            if let Some(val) = meta.gdal_nodata.as_deref() {
-                let trimmed = val.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match parse_nodata(Some(trimmed)) {
-                    Ok(Some(spec)) => {
-                        gdal_specs.insert(spec);
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: ignoring unsupported GDAL_NODATA value `{trimmed}`: {e}"
-                        );
-                    }
-                }
-            }
-        }
-
-        match gdal_specs.len() {
-            0 => None,
-            1 => {
-                let spec = gdal_specs.into_iter().next().unwrap();
-                println!("Using GDAL_NODATA value from source(s)");
-                Some(spec)
-            }
-            _ => {
-                return Err(
-                    "conflicting GDAL_NODATA values across input sources; please specify --nodata"
-                        .into(),
-                );
-            }
-        }
-    };
+    let nodata = resolve_nodata(&sources_meta, cli_nodata)?;
 
     // Open all source TIFFs and compute layouts.
     let source_paths: Vec<_> = sources_meta.iter().map(|m| m.path.clone()).collect();

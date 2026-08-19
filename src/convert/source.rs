@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::sync::Arc;
 
 use tiff::decoder::{Decoder, DecodingResult};
 
@@ -215,7 +216,7 @@ impl SourceSampler {
         source_idx: usize,
         xi: isize,
         yi: isize,
-        chunk_map: &HashMap<ChunkKey, ChunkData>,
+        chunk_map: &HashMap<ChunkKey, Arc<ChunkData>>,
     ) -> Result<Option<[u8; 4]>, Box<dyn std::error::Error>> {
         let Some((chunk_idx, lx, ly)) = self.reader.chunk_and_local(xi, yi) else {
             return Ok(None);

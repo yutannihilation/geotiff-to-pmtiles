@@ -23,6 +23,8 @@ ravif = "0.13.0"
 rgb = { version = "0.8.52", features = ["bytemuck"] }
 rayon = "1.11.0"
 glob = "0.3.2"
+axum = "0.8.8"
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "net", "signal"] }
 
 [package.metadata.release]
 tag = true # create a single tag for the version (e.g. "v0.2.5")

@@ -3,7 +3,7 @@ use clap::value_parser;
 
 #[derive(Debug, Parser)]
 #[command(name = "geotiff-to-pmtiles")]
-#[command(about = "Convert GeoTIFF to PMTiles with AVIF/PNG image tiles")]
+#[command(about = "Convert GeoTIFF to PMTiles or serve AVIF/PNG preview tiles")]
 pub struct Cli {
     /// Input GeoTIFF path(s) and/or glob pattern(s) (e.g. data/*.tif data/a.tif).
     #[arg(required = true, num_args = 1..)]
@@ -11,6 +11,15 @@ pub struct Cli {
     /// Output PMTiles path.
     #[arg(short, long, default_value = "out.pmtiles")]
     pub output: std::path::PathBuf,
+    /// Serve requested tiles dynamically instead of creating a PMTiles file.
+    #[arg(long)]
+    pub serve: bool,
+    /// Address used by preview server mode.
+    #[arg(long, default_value = "127.0.0.1:3000")]
+    pub bind: String,
+    /// Decoded TIFF chunk cache size in MiB for preview server mode.
+    #[arg(long, default_value_t = 128)]
+    pub cache_mb: usize,
     /// Source CRS when GeoKeyDirectoryTag is missing (e.g. "EPSG:4326").
     #[arg(long)]
     pub src_crs: Option<String>,
