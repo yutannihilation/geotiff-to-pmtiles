@@ -6,6 +6,13 @@ pub(crate) struct Pt {
     pub(crate) y: f64,
 }
 
+pub(crate) fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
+    Pt {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum GeoTransform {
     TiePointAndPixelScale {
@@ -160,6 +167,167 @@ pub(crate) fn webmerc_to_tile(x: f64, y: f64, z: u8) -> (u32, u32) {
     (xtile, ytile)
 }
 
+/// Piecewise-bilinear approximation of the mapping from output tile UV space
+/// into source raster pixel space.
+///
+/// UV space is the unit square over one output tile: `(0, 0)` is the tile's
+/// upper-left corner, `(1, 1)` its lower-right corner. The tile is split into
+/// `cells × cells` equal cells; every cell corner carries the exact source
+/// pixel position, and positions inside a cell are bilinearly interpolated.
+///
+/// The grid is built by [`TileMapping::refine`], which doubles `cells` until
+/// the interpolation error measured at cell midpoints drops below a threshold
+/// expressed in output pixels, so the accuracy is bounded regardless of zoom
+/// level, latitude, or source CRS.
+#[derive(Debug, Clone)]
+pub(crate) struct TileMapping {
+    cells: usize,
+    /// `(cells + 1)²` control points, row-major: index `j * (cells + 1) + i`
+    /// holds the source position of UV `(i / cells, j / cells)`.
+    grid: Vec<Pt>,
+}
+
+impl TileMapping {
+    /// Upper bound for `cells`; refinement stops here even if the error target
+    /// is not met (this only happens for very coarse tiles near the poles).
+    pub(crate) const MAX_CELLS: usize = 64;
+
+    /// Build a mapping by adaptive refinement.
+    ///
+    /// * `exact(u, v)` evaluates the exact UV → source pixel mapping.
+    /// * `max_error_out_px` is the tolerated interpolation error in output
+    ///   pixels; it is converted to source pixels with the tile's smallest
+    ///   edge scale, which is conservative for anisotropic mappings.
+    /// * `tile_size_px` is the output tile edge length in pixels.
+    ///
+    /// Returns the coarsest power-of-two grid whose midpoint error is within
+    /// the threshold, or a `MAX_CELLS` grid if the threshold is never met.
+    /// Errors from `exact` are propagated; a degenerate (zero-area) corner
+    /// mapping is an error rather than being silently accepted.
+    pub(crate) fn refine<E>(
+        max_error_out_px: f64,
+        tile_size_px: usize,
+        mut exact: E,
+    ) -> Result<Self, Box<dyn std::error::Error>>
+    where
+        E: FnMut(f64, f64) -> Result<Pt, Box<dyn std::error::Error>>,
+    {
+        let ul = exact(0.0, 0.0)?;
+        let ur = exact(1.0, 0.0)?;
+        let ll = exact(0.0, 1.0)?;
+        let lr = exact(1.0, 1.0)?;
+
+        // Source pixels per output pixel, taken from the shortest tile edge so the
+        // threshold is never looser than the visible error in any direction.
+        let edge = |a: Pt, b: Pt| (b.x - a.x).hypot(b.y - a.y);
+        let scale = edge(ul, ur)
+            .min(edge(ll, lr))
+            .min(edge(ul, ll))
+            .min(edge(ur, lr))
+            / tile_size_px as f64;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("degenerate tile mapping: tile collapses in source raster space".into());
+        }
+        let threshold_src_px = max_error_out_px * scale;
+
+        let mut mapping = TileMapping {
+            cells: 1,
+            grid: vec![ul, ur, ll, lr],
+        };
+
+        while mapping.cells < Self::MAX_CELLS {
+            let fine = mapping.cells * 2;
+            let stride = fine + 1;
+            let mut fine_grid = vec![Pt { x: 0.0, y: 0.0 }; stride * stride];
+            let mut max_err = 0.0_f64;
+            for j in 0..=fine {
+                for i in 0..=fine {
+                    let idx = j * stride + i;
+                    if i % 2 == 0 && j % 2 == 0 {
+                        fine_grid[idx] = mapping.point(i / 2, j / 2);
+                        continue;
+                    }
+                    let u = i as f64 / fine as f64;
+                    let v = j as f64 / fine as f64;
+                    let p = exact(u, v)?;
+                    let q = mapping.eval(u, v);
+                    max_err = max_err.max((p.x - q.x).hypot(p.y - q.y));
+                    fine_grid[idx] = p;
+                }
+            }
+            if max_err <= threshold_src_px {
+                break;
+            }
+            mapping = TileMapping {
+                cells: fine,
+                grid: fine_grid,
+            };
+            if mapping.cells == Self::MAX_CELLS {
+                eprintln!(
+                    "warning: reprojection grid reached {} cells with error {max_err:.3} source px (target {threshold_src_px:.3}); using it anyway",
+                    Self::MAX_CELLS
+                );
+            }
+        }
+
+        Ok(mapping)
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
+    }
+
+    /// Control point at grid indices `(i, j)`, i.e. UV `(i / cells, j / cells)`.
+    pub(crate) fn point(&self, i: usize, j: usize) -> Pt {
+        self.grid[j * (self.cells + 1) + i]
+    }
+
+    /// Index of the cell column/row containing `t ∈ [0, 1]`, clamped so `t = 1`
+    /// belongs to the last cell.
+    pub(crate) fn cell_index(&self, t: f64) -> usize {
+        ((t * self.cells as f64).floor().max(0.0) as usize).min(self.cells - 1)
+    }
+
+    /// Left and right cell-boundary positions of cell column `cu` at UV row `v`,
+    /// i.e. the vertical interpolation along the two cell edges bounding the row.
+    pub(crate) fn row_segment(&self, v: f64, cu: usize) -> (Pt, Pt) {
+        let cv = self.cell_index(v);
+        let lv = v * self.cells as f64 - cv as f64;
+        let left = lerp(self.point(cu, cv), self.point(cu, cv + 1), lv);
+        let right = lerp(self.point(cu + 1, cv), self.point(cu + 1, cv + 1), lv);
+        (left, right)
+    }
+
+    /// Interpolated source position of UV `(u, v)`.
+    pub(crate) fn eval(&self, u: f64, v: f64) -> Pt {
+        let cu = self.cell_index(u);
+        let lu = u * self.cells as f64 - cu as f64;
+        let (left, right) = self.row_segment(v, cu);
+        lerp(left, right, lu)
+    }
+
+    /// Axis-aligned bounding box `(min_x, min_y, max_x, max_y)` of all control
+    /// points in source pixel space.
+    pub(crate) fn bbox(&self) -> (f64, f64, f64, f64) {
+        self.grid.iter().fold(
+            (
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(min_x, min_y, max_x, max_y), p| {
+                (
+                    min_x.min(p.x),
+                    min_y.min(p.y),
+                    max_x.max(p.x),
+                    max_y.max(p.y),
+                )
+            },
+        )
+    }
+}
+
 pub(crate) struct TileBounds {
     pub(crate) ul: Pt,
     pub(crate) ur: Pt,
@@ -283,6 +451,119 @@ mod tests {
 
         let (x1, y1) = webmerc_to_tile(ORIGIN_SHIFT, -ORIGIN_SHIFT, 2);
         assert_eq!((x1, y1), (3, 3));
+    }
+
+    fn dense_max_error(mapping: &TileMapping, exact: impl Fn(f64, f64) -> Pt) -> f64 {
+        let mut worst = 0.0_f64;
+        for j in 0..=256 {
+            for i in 0..=256 {
+                let (u, v) = (i as f64 / 256.0, j as f64 / 256.0);
+                let p = exact(u, v);
+                let q = mapping.eval(u, v);
+                worst = worst.max((p.x - q.x).hypot(p.y - q.y));
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn tile_mapping_affine_needs_single_cell() {
+        // Rotated + scaled affine mapping is reproduced exactly by one bilinear cell.
+        let exact = |u: f64, v: f64| Pt {
+            x: 100.0 + 300.0 * u - 50.0 * v,
+            y: 20.0 + 40.0 * u + 280.0 * v,
+        };
+        let m = TileMapping::refine(0.125, 512, |u, v| Ok(exact(u, v))).unwrap();
+        assert_eq!(m.cells(), 1);
+        assert!(dense_max_error(&m, exact) < 1e-9);
+        let (min_x, min_y, max_x, max_y) = m.bbox();
+        assert_close(min_x, 50.0);
+        assert_close(max_x, 400.0);
+        assert_close(min_y, 20.0);
+        assert_close(max_y, 340.0);
+    }
+
+    #[test]
+    fn tile_mapping_refines_until_error_is_below_threshold() {
+        // y is quadratic in v: a single cell is off by 10 source px at v = 0.5.
+        // Edge scale is 1 source px per output px, so the threshold is 0.125 px;
+        // error shrinks 4x per subdivision -> 10/64 > 0.125 >= 10/256 -> 16 cells.
+        let exact = |u: f64, v: f64| Pt {
+            x: 512.0 * u,
+            y: 512.0 * v + 40.0 * v * v,
+        };
+        let m = TileMapping::refine(0.125, 512, |u, v| Ok(exact(u, v))).unwrap();
+        assert_eq!(m.cells(), 16);
+        assert!(dense_max_error(&m, exact) <= 0.125);
+
+        // A coarser tolerance stops earlier.
+        let coarse = TileMapping::refine(1.0, 512, |u, v| Ok(exact(u, v))).unwrap();
+        assert_eq!(coarse.cells(), 4);
+        assert!(dense_max_error(&coarse, exact) <= 1.0);
+    }
+
+    #[test]
+    fn tile_mapping_threshold_scales_with_source_resolution() {
+        // Same shape as above but the source has 8 px per output px, so the same
+        // 0.125 output px tolerance allows 1 source px of error -> 4 cells.
+        let exact = |u: f64, v: f64| Pt {
+            x: 4096.0 * u,
+            y: 4096.0 * v + 40.0 * v * v,
+        };
+        let m = TileMapping::refine(0.125, 512, |u, v| Ok(exact(u, v))).unwrap();
+        assert_eq!(m.cells(), 4);
+    }
+
+    #[test]
+    fn tile_mapping_stops_at_max_cells() {
+        let exact = |u: f64, v: f64| Pt {
+            x: 512.0 * u,
+            y: 512.0 * v + 1.0e6 * v * v,
+        };
+        let m = TileMapping::refine(0.125, 512, |u, v| Ok(exact(u, v))).unwrap();
+        assert_eq!(m.cells(), TileMapping::MAX_CELLS);
+    }
+
+    #[test]
+    fn tile_mapping_rejects_degenerate_and_propagates_errors() {
+        let collapsed = TileMapping::refine(0.125, 512, |_, _| Ok(Pt { x: 1.0, y: 1.0 }));
+        assert!(collapsed.is_err());
+
+        let failing = TileMapping::refine(0.125, 512, |u, v| {
+            if u == 0.5 && v == 0.5 {
+                Err("out of projection domain".into())
+            } else {
+                Ok(Pt {
+                    x: 512.0 * u,
+                    y: 512.0 * v,
+                })
+            }
+        });
+        assert!(failing.is_err());
+    }
+
+    #[test]
+    fn tile_mapping_eval_is_continuous_across_cells_and_hits_control_points() {
+        let exact = |u: f64, v: f64| Pt {
+            x: 512.0 * u + 30.0 * u * u,
+            y: 512.0 * v + 40.0 * v * v,
+        };
+        let m = TileMapping::refine(0.125, 512, |u, v| Ok(exact(u, v))).unwrap();
+        let n = m.cells();
+        for j in 0..=n {
+            for i in 0..=n {
+                let (u, v) = (i as f64 / n as f64, j as f64 / n as f64);
+                let p = m.eval(u, v);
+                let e = exact(u, v);
+                assert_close(p.x, e.x);
+                assert_close(p.y, e.y);
+            }
+        }
+        // Approaching a cell boundary from both sides gives the same position.
+        let b = 1.0 / n as f64;
+        let left = m.eval(b - 1e-12, 0.3);
+        let right = m.eval(b + 1e-12, 0.3);
+        assert!((left.x - right.x).abs() < 1e-6 && (left.y - right.y).abs() < 1e-6);
     }
 
     #[test]

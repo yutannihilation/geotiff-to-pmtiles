@@ -2,7 +2,7 @@ use proj_lite::Proj;
 use tiff::decoder::Decoder;
 use tiff::tags::Tag;
 
-use super::{GeoTransform, Georef, Pt};
+use super::{GeoTransform, Georef, Pt, TILE_SIZE, TileBounds, TileMapping};
 
 // Well-known TIFF/GeoTIFF tag IDs not defined in the `tiff` crate.
 pub(crate) const TAG_PLANAR_CONFIGURATION: Tag = Tag::Unknown(284);
@@ -55,20 +55,37 @@ fn source_corners_merc_from_dims(
     Ok(out)
 }
 
-pub(crate) fn tile_corners_in_georef_raster(
+/// Web Mercator → source CRS transform used by [`tile_mapping_in_georef_raster`].
+pub(crate) fn inverse_projection(georef: &Georef) -> Result<Proj, Box<dyn std::error::Error>> {
+    Ok(Proj::new_known_crs("EPSG:3857", &georef.source_crs)?)
+}
+
+/// Build the tile → source raster mapping for one output tile.
+///
+/// The tile is an axis-aligned rectangle in Web Mercator, so a UV position is
+/// first placed linearly inside `bounds`, then reprojected into the source CRS
+/// and mapped to raster pixels with the inverse georeferencing transform.
+/// [`TileMapping::refine`] evaluates this exact mapping at as many control
+/// points as needed to keep the interpolation error within `max_error_out_px`.
+///
+/// `from_merc` must be the `EPSG:3857` → `georef.source_crs` transform (see
+/// [`inverse_projection`]); it is passed in so callers can reuse it across tiles.
+pub(crate) fn tile_mapping_in_georef_raster(
     georef: &Georef,
-    tile_corners_merc: [Pt; 4],
-) -> Result<[Pt; 4], Box<dyn std::error::Error>> {
-    // Reproject tile corners from WebMercator to source CRS, then map CRS -> raster
-    // with the inverse georeferencing transform. Rendering interpolates inside these corners.
-    let from_merc = Proj::new_known_crs("EPSG:3857", &georef.source_crs)?;
+    from_merc: &Proj,
+    bounds: &TileBounds,
+    max_error_out_px: f64,
+) -> Result<TileMapping, Box<dyn std::error::Error>> {
     let inverse = georef.forward.invert()?;
-    let mut out = [Pt { x: 0.0, y: 0.0 }; 4];
-    for (i, p) in tile_corners_merc.iter().enumerate() {
-        let (sx, sy) = from_merc.transform2((p.x, p.y))?;
-        out[i] = inverse.apply(Pt { x: sx, y: sy });
-    }
-    Ok(out)
+    let ul = bounds.ul;
+    let width = bounds.ur.x - bounds.ul.x;
+    let height = bounds.ll.y - bounds.ul.y;
+    TileMapping::refine(max_error_out_px, TILE_SIZE, |u, v| {
+        let merc_x = ul.x + width * u;
+        let merc_y = ul.y + height * v;
+        let (sx, sy) = from_merc.transform2((merc_x, merc_y))?;
+        Ok(inverse.apply(Pt { x: sx, y: sy }))
+    })
 }
 
 /// Open a TIFF once and extract dimensions, georeferencing, and GDAL_NODATA.
@@ -266,4 +283,81 @@ fn geokey_short(data: &[u16], target_key: u16) -> Option<u16> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resample::{tile_bounds_webmerc, webmerc_to_tile};
+
+    fn wgs84_georef() -> Georef {
+        Georef {
+            source_crs: "EPSG:4326".to_string(),
+            forward: GeoTransform::TiePointAndPixelScale {
+                raster_x: 0.0,
+                raster_y: 0.0,
+                model_x: 20.0,
+                model_y: 62.0,
+                scale_x: 0.0005,
+                scale_y: 0.0005,
+            },
+            raster_offset: 0.0,
+        }
+    }
+
+    /// Max interpolation error of `mapping` in output pixels over a dense sample.
+    fn dense_error_out_px(georef: &Georef, bounds: &TileBounds, mapping: &TileMapping) -> f64 {
+        let from_merc = inverse_projection(georef).unwrap();
+        let inverse = georef.forward.invert().unwrap();
+        let ul = mapping.point(0, 0);
+        let ur = mapping.point(mapping.cells(), 0);
+        let ll = mapping.point(0, mapping.cells());
+        let scale = (ur.x - ul.x)
+            .hypot(ur.y - ul.y)
+            .min((ll.x - ul.x).hypot(ll.y - ul.y))
+            / TILE_SIZE as f64;
+        let mut worst = 0.0_f64;
+        for j in 0..=128 {
+            for i in 0..=128 {
+                let (u, v) = (i as f64 / 128.0, j as f64 / 128.0);
+                let mx = bounds.ul.x + (bounds.ur.x - bounds.ul.x) * u;
+                let my = bounds.ul.y + (bounds.ll.y - bounds.ul.y) * v;
+                let (sx, sy) = from_merc.transform2((mx, my)).unwrap();
+                let exact = inverse.apply(Pt { x: sx, y: sy });
+                let approx = mapping.eval(u, v);
+                worst = worst.max((exact.x - approx.x).hypot(exact.y - approx.y) / scale);
+            }
+        }
+        worst
+    }
+
+    fn helsinki_tile(z: u8) -> TileBounds {
+        let to_merc = Proj::new_known_crs("EPSG:4326", "EPSG:3857").unwrap();
+        let (mx, my) = to_merc.transform2((24.9, 60.2)).unwrap();
+        let (x, y) = webmerc_to_tile(mx, my, z);
+        tile_bounds_webmerc(z, x, y)
+    }
+
+    #[test]
+    fn coarse_tile_is_refined_and_meets_error_target() {
+        let georef = wgs84_georef();
+        let bounds = helsinki_tile(4);
+        let from_merc = inverse_projection(&georef).unwrap();
+        let mapping = tile_mapping_in_georef_raster(&georef, &from_merc, &bounds, 0.125).unwrap();
+        // Corner-only mapping is off by ~22 output px here; 16 cells bring it under 0.125.
+        assert!(mapping.cells() >= 16, "cells = {}", mapping.cells());
+        let err = dense_error_out_px(&georef, &bounds, &mapping);
+        assert!(err <= 0.125, "error {err} output px");
+    }
+
+    #[test]
+    fn fine_tile_keeps_corner_only_mapping() {
+        let georef = wgs84_georef();
+        let bounds = helsinki_tile(16);
+        let from_merc = inverse_projection(&georef).unwrap();
+        let mapping = tile_mapping_in_georef_raster(&georef, &from_merc, &bounds, 0.125).unwrap();
+        assert_eq!(mapping.cells(), 1);
+        let err = dense_error_out_px(&georef, &bounds, &mapping);
+        assert!(err <= 0.125, "error {err} output px");
+    }
 }

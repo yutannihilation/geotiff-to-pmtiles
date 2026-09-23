@@ -15,9 +15,9 @@ use tiff::decoder::Decoder;
 
 use crate::cli::{PngCompression, Resampling, TileFormat};
 use crate::resample::{
-    Georef, NoDataSpec, Pt, SourceMetadata, TAG_PLANAR_CONFIGURATION, TILE_SIZE, parse_nodata,
-    source_corners_merc_georef, tile_bounds_webmerc, tile_corners_in_georef_raster,
-    webmerc_to_tile, zoom_for_tile_size,
+    Georef, MAX_REPROJECTION_ERROR_PX, NoDataSpec, SourceMetadata, TAG_PLANAR_CONFIGURATION,
+    TILE_SIZE, TileMapping, inverse_projection, parse_nodata, source_corners_merc_georef,
+    tile_bounds_webmerc, tile_mapping_in_georef_raster, webmerc_to_tile, zoom_for_tile_size,
 };
 
 use self::cache::{ChunkData, ChunkKey};
@@ -93,14 +93,23 @@ fn tile_locality_key(z: u8, x: u32, y: u32, max_zoom: u8) -> u64 {
 }
 
 /// Compute which TIFF chunks a tile needs from each source.
+/// One `EPSG:3857` → source CRS transform per source, for reuse across tiles.
+/// `Proj` is not `Send`, so each worker thread builds its own set.
+fn make_inverse_projections(source_specs: &[SourceSpec]) -> Result<Vec<Proj>, String> {
+    source_specs
+        .iter()
+        .map(|spec| inverse_projection(&spec.georef).map_err(|e| e.to_string()))
+        .collect()
+}
+
 fn compute_chunk_requirements(
     tile: (u8, u32, u32),
     source_specs: &[SourceSpec],
     source_bounds: &[(f64, f64, f64, f64)],
-) -> (HashSet<ChunkKey>, Vec<(usize, [Pt; 4])>) {
+    inverse_projs: &[Proj],
+) -> (HashSet<ChunkKey>, Vec<(usize, TileMapping)>) {
     let (z, x, y) = tile;
     let bounds = tile_bounds_webmerc(z, x, y);
-    let tile_merc_corners = [bounds.ul, bounds.ur, bounds.lr, bounds.ll];
     let tile_min_x = bounds.ul.x.min(bounds.lr.x);
     let tile_max_x = bounds.ul.x.max(bounds.lr.x);
     let tile_min_y = bounds.ul.y.min(bounds.lr.y);
@@ -120,22 +129,21 @@ fn compute_chunk_requirements(
             continue;
         }
 
-        let corners = match tile_corners_in_georef_raster(&spec.georef, tile_merc_corners) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let mapping = match tile_mapping_in_georef_raster(
+            &spec.georef,
+            &inverse_projs[source_idx],
+            &bounds,
+            MAX_REPROJECTION_ERROR_PX,
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("warning: z={z} x={x} y={y}: skipping source {source_idx}: {e}");
+                continue;
+            }
         };
 
-        // Compute raster-space bounding box from the 4 corners
-        let mut min_rx = f64::INFINITY;
-        let mut max_rx = f64::NEG_INFINITY;
-        let mut min_ry = f64::INFINITY;
-        let mut max_ry = f64::NEG_INFINITY;
-        for c in &corners {
-            min_rx = min_rx.min(c.x);
-            max_rx = max_rx.max(c.x);
-            min_ry = min_ry.min(c.y);
-            max_ry = max_ry.max(c.y);
-        }
+        // Raster-space bounding box over all control points of the mapping.
+        let (mut min_rx, mut min_ry, mut max_rx, mut max_ry) = mapping.bbox();
 
         // Add 1 pixel margin for bilinear sampling
         min_rx = (min_rx - 1.0).max(0.0);
@@ -164,7 +172,7 @@ fn compute_chunk_requirements(
             }
         }
 
-        selected_sources.push((source_idx, corners));
+        selected_sources.push((source_idx, mapping));
     }
 
     (needed_chunks, selected_sources)
@@ -493,19 +501,33 @@ pub fn convert(
     let mut reported_bucket = 0usize;
 
     for batch in render_jobs.chunks(BATCH_SIZE) {
-        // Phase 1: Compute chunk requirements for all tiles in this batch
-        let mut batch_chunks = HashSet::new();
+        // Phase 1: Compute chunk requirements for all tiles in this batch (rayon;
+        // PROJ transforms are built per worker because `Proj` is not `Send`).
         #[allow(clippy::type_complexity)]
-        let batch_selections: Vec<(TileJob, Vec<(usize, [Pt; 4])>)> = batch
-            .iter()
-            .map(|job| {
-                let (chunks, selected) = compute_chunk_requirements(
-                    (job.z, job.x, job.y),
-                    &source_specs,
-                    &source_bounds,
-                );
+        let batch_results: Vec<(TileJob, HashSet<ChunkKey>, Vec<(usize, TileMapping)>)> = batch
+            .par_iter()
+            // Bound the number of splits so PROJ objects are built a handful of times per batch.
+            .with_min_len(32)
+            .map_init(
+                || make_inverse_projections(&source_specs),
+                |inverse_projs, job| {
+                    let inverse_projs = inverse_projs.as_ref().map_err(|e| e.clone())?;
+                    let (chunks, selected) = compute_chunk_requirements(
+                        (job.z, job.x, job.y),
+                        &source_specs,
+                        &source_bounds,
+                        inverse_projs,
+                    );
+                    Ok((*job, chunks, selected))
+                },
+            )
+            .collect::<Result<_, String>>()?;
+        let mut batch_chunks = HashSet::new();
+        let batch_selections: Vec<(TileJob, Vec<(usize, TileMapping)>)> = batch_results
+            .into_iter()
+            .map(|(job, chunks, selected)| {
                 batch_chunks.extend(chunks);
-                (*job, selected)
+                (job, selected)
             })
             .collect();
 
