@@ -3,6 +3,10 @@
 <!-- next-header -->
 ## [Unreleased] (ReleaseDate)
 
+### Bug fixes
+
+- Reprojection accuracy: the tile → source pixel mapping is now an adaptively refined bilinear grid instead of a 4-corner interpolation. Corner-only mapping was off by about 1 output pixel at z8, 4 px at z6 and 15–25 px at z4; the error is now kept at about 0.125 output pixels. Tiles at fine zoom levels are unchanged.
+
 ## [v0.0.14] (2026-03-31)
 
 ### New features
