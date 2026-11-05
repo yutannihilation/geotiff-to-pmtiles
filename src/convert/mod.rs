@@ -594,7 +594,7 @@ pub fn convert(
                 continue;
             };
             let coord = TileCoord::new(write_z, write_x, write_y)?;
-            writer.add_raw_tile(coord, &bytes)?;
+            writer.add_tile(coord, &bytes)?;
             next_to_write += 1;
             let percent = (next_to_write * 100) / total_tiles.max(1);
             let bucket = percent / 10;
