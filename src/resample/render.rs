@@ -1,7 +1,7 @@
 use image_webp::{EncoderParams, WebPEncoder};
 use ravif::{BitDepth, Encoder, Img, RGBA8};
 
-use super::{Pt, TILE_SIZE};
+use super::TILE_SIZE;
 
 pub(crate) fn encode_png(
     rgba: &[u8],
@@ -17,13 +17,6 @@ pub(crate) fn encode_png(
         writer.write_image_data(rgba)?;
     }
     Ok(buf)
-}
-
-pub(crate) fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
-    Pt {
-        x: a.x + (b.x - a.x) * t,
-        y: a.y + (b.y - a.y) * t,
-    }
 }
 
 pub(crate) fn make_avif_encoder(speed: u8, quality: u8) -> Encoder<'static> {
