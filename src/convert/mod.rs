@@ -528,7 +528,7 @@ pub fn convert(
                         sources, selected, resampling, nodata, &chunk_map, rgba_buf,
                     )
                     .and_then(|()| {
-                        if rgba_buf.chunks_exact(4).all(|px| px[3] == 0) {
+                        if rgba_buf.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
                             return Ok(None);
                         }
                         let encoded = match tile_format {
